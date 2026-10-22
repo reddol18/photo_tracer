@@ -81,6 +81,8 @@ def main() -> None:
         tp = sum(d >= th and cut for cut, d in known)
         print(f"  {th:.2f}: {ok}/{len(known)} · 다른 일 잡음 {tp}/{sum(c for c, _ in known)}"
               f" · 같은 일 잘못 자름 {sum(d >= th and not cut for cut, d in known)}")
+    if marked is not None:
+        return  # 직접 고른 정답에는 '섞임 안' 구분이 없다
     print("섞임 구간별 가장 먼 후보 경계 거리:")
     for i in sorted(mixed):
         ds = [d for lab, d, c in rows if lab == "섞임 안" and where[c] == i]
