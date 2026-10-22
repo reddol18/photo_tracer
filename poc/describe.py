@@ -80,6 +80,15 @@ def tags_for(emb: np.ndarray, names, T, base: np.ndarray) -> list[tuple[str, str
     return out
 
 
+def sentence(e: list[dict], tags) -> str:
+    """앱에 보일 한 줄 설명. 예: '2026-01-03(토) 오후 4:04–5:30 · 식당에서 음식, 케이크·생일 · 사진 10장'"""
+    a, b = e[0]["t"], e[-1]["t"]
+    hm = lambda t: f"{'오전' if t.hour < 12 else '오후'} {t.hour % 12 or 12}:{t.minute:02d}"
+    span = hm(a) if (b - a).total_seconds() < 60 else f"{hm(a)}–{hm(b)}" if a.date() == b.date() else f"{hm(a)}–{b:%m-%d} {hm(b)}"
+    what = ", ".join(n for k, n, _ in tags[1:])
+    return f"{a:%Y-%m-%d}({WEEK[a.weekday()]}) {span} · {tags[0][1]}에서{' ' + what if what else ''} · 사진 {len(e)}장"
+
+
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>구간 설명 확인</title>
 <style>
@@ -92,7 +101,8 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 main{max-width:1200px;margin:0 auto;padding:12px 16px 80px}.help{color:var(--sub);font-size:14px;margin:4px 0 12px}
 .e{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px}
 .e.done{opacity:.55}.e.cur{border-color:var(--sel);border-width:2px}
-.desc{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:16px}.desc .w{font-weight:600;margin-right:4px}
+.text{font-size:18px;font-weight:600;margin:2px 0 6px}
+.desc{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:14px;color:var(--sub)}
 .chip{border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:2px 10px;cursor:pointer;font-size:14px;background:none}
 .chip.wrong{border-color:var(--warn);color:var(--warn);text-decoration:line-through}
 .chip small{color:var(--sub);margin-left:4px}.flag{color:var(--warn);font-size:13px}
@@ -102,8 +112,9 @@ main{max-width:1200px;margin:0 auto;padding:12px 16px 80px}.help{color:var(--sub
 </style></head><body>
 <header><b>구간 설명 확인</b><select id="year"></select><span id="stat"></span><label><input type="checkbox" id="todo"> 안 고른 것만</label>
 <button id="save" class="primary">결과 저장</button></header>
-<main><p class="help">경계 판정까지 반영한 구간입니다. 초록 테두리가 설명을 만드는 데 쓴 대표 사진입니다.
-태그 중 틀린 것은 눌러서 지우고(빨간 줄), 설명 전체를 판정하세요. 키보드: 1 맞음 · 2 일부 틀림 · 3 틀림 (고르면 다음으로).
+<main><p class="help">구간마다 맨 위 굵은 글씨가 앱에 보일 <b>설명 문장</b>입니다. 아래 사진(초록 테두리 = 설명을 만든 대표 사진)을 보고
+이 문장이 그 일을 맞게 설명하는지 판정하세요. 키보드: 1 맞음 · 2 일부 틀림 · 3 틀림 (고르면 다음으로).
+문장에 쓰인 태그 중 틀린 것은 '태그' 줄에서 눌러 표시하면(빨간 줄) 어떤 태그가 자주 틀리는지 알 수 있습니다.
 아직 사람 이름과 장소 이름은 넣지 않았습니다. 작업은 이 브라우저에 자동 저장됩니다.</p><div id="list"></div></main>
 <script>
 const E = __EVENTS__;
@@ -124,7 +135,8 @@ function render() {
   if (cur < 0 || !idx.includes(cur)) cur = idx.find(i => !st[E[i].key]?.verdict) ?? idx[0] ?? -1;
   document.getElementById("list").innerHTML = idx.map(i => { const e = E[i], s = st[e.key] || {wrong: []};
     return `<div class="e ${s.verdict ? "done" : ""} ${i === cur ? "cur" : ""}" id="e${i}">
-      <div class="desc"><span class="w">${e.when}</span>${e.tags.map(([k, n, c]) =>
+      <div class="text">${e.text}</div>
+      <div class="desc"><span>태그</span>${e.tags.map(([k, n, c]) =>
         `<button class="chip ${s.wrong.includes(n) ? "wrong" : ""}" data-i="${i}" data-tag="${n}">${n}<small>${k}</small></button>`).join("")}
         <span class="flag">${e.unresolved ? "· 여러 일이 섞인 채 남은 구간" : ""}</span></div>
       <div class="all">${e.ids.map(id => `<img loading="lazy" src="phone/thumbs/${id}.jpg" alt="" class="${e.reps.includes(id) ? "rep" : ""}">`).join("")}</div>
@@ -179,7 +191,7 @@ def main() -> None:
         top1_same += rep[0][1] == full[0][1]
         a, b = {t[1] for t in rep}, {t[1] for t in full}
         overlap.append(len(a & b) / len(a | b))
-        out.append({"key": e[0]["id"], "event": i, "when": when(e), "photos": len(e), "ids": [p["id"] for p in e],
+        out.append({"key": e[0]["id"], "event": i, "when": when(e), "text": sentence(e, rep), "photos": len(e), "ids": [p["id"] for p in e],
                     "reps": r, "tags": [[k, n, round(s, 3)] for k, n, s in rep], "unresolved": i in unresolved})
     n = len(events)
     print(f"대표 {sum(map(len, R))}장으로 만든 설명 vs 전체 {len(shot)}장으로 만든 설명:"
