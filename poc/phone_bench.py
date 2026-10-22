@@ -6,6 +6,7 @@
   uv run phone_bench.py run             # 앱을 autorun으로 띄우고 끝날 때까지 기다린 뒤 결과를 받아 정리
   uv run phone_bench.py report FILE     # 받은 결과 JSON만 다시 정리
   uv run phone_bench.py scan            # 갤러리 메타데이터(날짜·출처 폴더·GPS 100m 단위)만 받기 → time_events.py
+  uv run phone_bench.py thumbs          # time_events.py가 고른 사진만 160px 썸네일로 받기 → event_review.py
 결과 정리에는 PC 결과와의 비교가 들어간다:
   - ML Kit 얼굴 수 vs PC YuNet 얼굴 수 (eval_data/photos.csv)
   - 폰 SigLIP 임베딩 vs PC onnxruntime 임베딩 (같은 ONNX, 전처리 차이 확인)
@@ -64,23 +65,48 @@ def push(config: dict) -> None:
     push_config(config)
 
 
-def push_config(config: dict) -> None:
-    """설정만 바꿔 넣는다. 넣은 뒤 폰에서 다시 읽어 내용·권한을 확인하고, 다르면 멈춘다."""
-    cfg = EVAL / "phone_config.json"
-    text = json.dumps(config, ensure_ascii=False)
-    cfg.write_text(text, encoding="utf-8")
+def push_text(name: str, text: str) -> None:
+    """작은 텍스트 파일을 bench/에 넣고, 폰에서 다시 읽어 내용·권한을 확인한다. 다르면 멈춘다."""
+    local = EVAL / f"phone_{name}"
+    local.write_bytes(text.encode("utf-8"))  # write_text는 Windows에서 줄바꿈을 \r\n으로 바꾼다
     # 직접 덮어쓰면 fchown 실패로 기존 파일만 지워진다. 임시 폴더를 거쳐 복사하고, 복사본은 shell 전용이라 권한을 연다
-    adb("push", str(cfg), "/data/local/tmp/config.json")
-    adb("shell", "cp", "/data/local/tmp/config.json", f"{REMOTE}/config.json")
-    adb("shell", "chmod", "666", f"{REMOTE}/config.json")
-    got = adb("shell", "cat", f"{REMOTE}/config.json").strip()
-    if got != text:
-        sys.exit(f"폰의 설정이 넣은 것과 다릅니다:\n  넣음 {text}\n  폰   {got}")
-    for line in adb("shell", "ls", "-ld", REMOTE, f"{REMOTE}/photos", f"{REMOTE}/models",
-                    f"{REMOTE}/config.json").splitlines():
-        if not line.startswith(("drwxrwxrwx", "-rw-rw-rw-")):
+    adb("push", str(local), f"/data/local/tmp/{name}")
+    adb("shell", "cp", f"/data/local/tmp/{name}", f"{REMOTE}/{name}")
+    adb("shell", "chmod", "666", f"{REMOTE}/{name}")
+    got = adb("shell", "cat", f"{REMOTE}/{name}").replace("\r", "").strip()  # adb shell 출력은 \n 앞에 \r을 붙인다
+    if got != text.strip():
+        sys.exit(f"폰의 {name}이(가) 넣은 것과 다릅니다:\n  넣음 {text[:300]}\n  폰   {got[:300]}")
+    line = adb("shell", "ls", "-l", f"{REMOTE}/{name}").strip()
+    if not line.startswith("-rw-rw-rw-"):
+        sys.exit(f"앱이 못 읽는 권한: {line}")
+
+
+def push_config(config: dict) -> None:
+    """설정만 바꿔 넣는다."""
+    push_text("config.json", json.dumps(config, ensure_ascii=False))
+    for line in adb("shell", "ls", "-ld", REMOTE, f"{REMOTE}/photos", f"{REMOTE}/models").splitlines():
+        if not line.startswith("drwxrwxrwx"):
             sys.exit(f"앱이 못 읽는 권한: {line}")
-    print(f"설정 확인됨: {got}")
+    print(f"설정 확인됨: {adb('shell', 'cat', f'{REMOTE}/config.json').strip()}")
+
+
+def thumbs() -> Path:
+    """time_events.py가 고른 사진만 폰에서 160px 썸네일로 만들어 eval_data/phone/thumbs/로 가져온다."""
+    events = json.loads((EVAL / "time_events.json").read_text(encoding="utf-8"))
+    ids = [i for e in events for i in e["ids"]]
+    adb("install", "-r", str(APK))
+    push_text("thumbs.txt", "\n".join(map(str, ids)))
+    print(f"썸네일 {len(ids)}장 요청 (구간 {len(events)}개)")
+    done = launch_and_fetch("thumbs", "thumbs_done_")
+    made, fail = map(int, done.read_text().split())
+    dst = OUT / "thumbs"
+    dst.mkdir(parents=True, exist_ok=True)
+    adb("pull", f"{REMOTE}/thumbs/.", str(dst))
+    got = len(list(dst.glob("*.jpg")))
+    print(f"폰: 요청 {made} · 실패 {fail} → PC에 받은 썸네일 {got}장")
+    if got < made - fail:
+        sys.exit("받은 썸네일이 폰에서 만든 수보다 적습니다")
+    return dst
 
 
 def run() -> Path:
@@ -182,7 +208,7 @@ def report(path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["push", "config", "run", "report", "scan"])
+    ap.add_argument("cmd", choices=["push", "config", "run", "report", "scan", "thumbs"])
     ap.add_argument("file", nargs="?", type=Path)
     ap.add_argument("--limit", type=int, default=DEFAULT_CONFIG["limit"])
     ap.add_argument("--xnnpack", action="store_true")
@@ -197,6 +223,8 @@ def main() -> None:
         push_config(config)
     elif args.cmd == "scan":
         print(f"받음: {scan()}")
+    elif args.cmd == "thumbs":
+        print(f"받음: {thumbs()}")
     elif args.cmd == "run":
         report(run())
     else:

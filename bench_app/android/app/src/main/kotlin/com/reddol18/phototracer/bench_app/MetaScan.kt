@@ -2,7 +2,9 @@ package com.reddol18.phototracer.bench_app
 
 import android.content.ContentUris
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.ExifInterface
+import android.util.Size
 import android.provider.MediaStore
 import android.util.Log
 import org.json.JSONArray
@@ -65,5 +67,37 @@ class MetaScan(private val ctx: Context) {
         out.setReadable(true, false)
         Log.i("Bench", "메타 스캔 완료: ${rows.length()}장, EXIF 실패 $exifFail, ${out.absolutePath}")
         return out.absolutePath
+    }
+
+    /** 구간 확인 페이지용 작은 썸네일. bench/thumbs.txt 의 MediaStore ID만 만든다(한 줄에 하나). */
+    fun thumbs(): String {
+        val dir = Benchmark.benchDir(ctx)
+        val ids = File(dir, "thumbs.txt").readLines().mapNotNull { it.trim().toLongOrNull() }
+        val outDir = File(dir, "thumbs").apply { mkdirs(); setReadable(true, false); setExecutable(true, false) }
+        var fail = 0
+        ids.forEachIndexed { i, id ->
+            try {
+                val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                val bmp = ctx.contentResolver.loadThumbnail(uri, Size(THUMB, THUMB), null)
+                File(outDir, "$id.jpg").apply {
+                    outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+                    setReadable(true, false)
+                }
+                bmp.recycle()
+            } catch (e: Exception) {
+                fail++
+            }
+            if ((i + 1) % 500 == 0) Log.i("Bench", "썸네일 ${i + 1}/${ids.size}")
+        }
+        // 다 만든 뒤에 완료 표시 파일을 쓴다 — PC는 이 파일이 생기면 폴더를 가져간다
+        val done = File(dir, "thumbs_done_${System.currentTimeMillis()}.txt")
+        done.writeText("${ids.size} $fail")
+        done.setReadable(true, false)
+        Log.i("Bench", "썸네일 완료: ${ids.size}장, 실패 $fail")
+        return done.absolutePath
+    }
+
+    companion object {
+        const val THUMB = 160
     }
 }

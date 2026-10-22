@@ -135,6 +135,18 @@ def main() -> None:
         ev = split(shot, 1e9, args.d, h, 1e9)
         print(f"  고정 {h}시간 간격: {len(ev)}개 · {sum(reps(len(e)) for e in ev)}장")
 
+    # 확인 페이지(event_review.py)용: 구간마다 사진 ID를 최대 8장 고르게 뽑는다 → 폰이 이것만 썸네일로 만든다
+    review = []
+    for i, e in enumerate(events):
+        step = max(1, len(e) / 8)
+        pick = [e[int(j * step)] for j in range(min(8, len(e)))]
+        moved = i > 0 and "lat" in events[i - 1][-1] and "lat" in e[0] and km(events[i - 1][-1], e[0]) > args.place_km
+        review.append({"event": i, "start": e[0]["t"].isoformat(), "end": e[-1]["t"].isoformat(), "photos": len(e),
+                       "ids": [p["id"] for p in pick],
+                       "why": "" if i == 0 else ("이동" if moved and (e[0]["t"] - events[i - 1][-1]["t"]).total_seconds()
+                                                  <= args.gap_h * 3600 else "공백")})
+    (EVAL / "time_events.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
     out = EVAL / "time_events.csv"
     with open(out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)

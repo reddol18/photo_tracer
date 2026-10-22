@@ -25,6 +25,16 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+        // --ez thumbs true: bench/thumbs.txt 의 사진만 작은 썸네일로 만든다
+        if (intent?.getBooleanExtra("thumbs", false) == true) {
+            worker.execute {
+                try {
+                    MetaScan(this).thumbs()
+                } catch (e: Throwable) {
+                    Log.e("Bench", "썸네일 실패", e)
+                }
+            }
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
