@@ -1,7 +1,7 @@
 [project]
 name = "photo-tracer-poc"
 version = "0.1.0"
-description = "0단계 검증: 얼굴 검출·임베딩·클러스터링 정확도를 PC에서 측정"
+description = "0단계 검증: 얼굴 검출·임베딩·클러스터링 정확도와 모델 변환을 PC에서 확인"
 requires-python = ">=3.11"
 dependencies = [
     "opencv-python>=4.10",
@@ -9,4 +9,29 @@ dependencies = [
     "pillow>=10.4",
     "pillow-heif>=0.18",
     "scikit-learn>=1.5",
+    "onnxruntime>=1.20",
 ]
+
+[dependency-groups]
+# SigLIP 2 → ONNX 변환용 (PC에서만 필요)
+export = [
+    "torch>=2.5",
+    "transformers>=4.50",
+    "sentencepiece>=0.2",
+    "protobuf>=5",
+    "onnx>=1.17",
+    "onnxscript>=0.2",
+]
+
+[tool.uv]
+default-groups = ["export"]
+# anaconda Python은 오래된 vcruntime140.dll(14.27)을 먼저 올려 torch·onnxruntime DLL 초기화가 실패한다
+python-preference = "only-managed"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
