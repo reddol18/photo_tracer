@@ -54,6 +54,7 @@ const KEY = "photo_tracer_event_review_v1";
 let st = {merge: {}, mixed: {}, move: {}};
 try { st = JSON.parse(localStorage.getItem(KEY)) || st; } catch (e) {}
 st.move = st.move || {};  // 사진 ID → 옮겨 간 구간 번호 (원래 구간이면 지운다)
+st.seen = st.seen || {};  // 열어 본 연도 — 표시 없는 구간을 "맞음"으로 셀 수 있는 범위
 const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} stat(); };
 const PHOTO = {};  // 사진 ID → {home: 원래 구간, t: 촬영 시각}
 EVENTS.forEach(e => e.ids.forEach((id, k) => PHOTO[id] = {home: e.event, t: e.ts[k]}));
@@ -79,6 +80,7 @@ function gapButton(e, prev) {
 }
 function render() {
   const y = ysel.value, out = [];
+  if (!st.seen[y]) { st.seen[y] = true; persist(); }
   const inEvent = {};
   Object.keys(PHOTO).forEach(id => (inEvent[owner(id)] ||= []).push(id));
   let day = "";
@@ -146,13 +148,13 @@ document.getElementById("clear").onclick = clearSel;
 document.addEventListener("keydown", ev => { if (ev.key === "Escape" && sel.size) clearSel(); });
 ysel.addEventListener("change", () => { sel.clear(); selEvent = lastClick = null; render(); window.scrollTo(0, 0); });
 document.getElementById("reset").onclick = () => {
-  if (confirm("표시한 내용을 모두 지울까요?")) { st = {merge: {}, mixed: {}, move: {}}; sel.clear(); selEvent = null; persist(); render(); }
+  if (confirm("표시한 내용을 모두 지울까요?")) { st = {merge: {}, mixed: {}, move: {}, seen: {}}; sel.clear(); selEvent = null; persist(); render(); }
 };
 document.getElementById("save").onclick = () => {
   const ids = o => Object.keys(o).filter(k => o[k]).map(Number);
   const moved = Object.entries(st.move).map(([id, to]) => ({id: Number(id), from: PHOTO[id].home, to, t: PHOTO[id].t}));
   const blob = new Blob([JSON.stringify({merge_with_prev: ids(st.merge), mixed: ids(st.mixed), moved,
-    reviewed_years: years}, null, 1)], {type: "application/json"});
+    reviewed_years: Object.keys(st.seen).sort()}, null, 1)], {type: "application/json"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "event_review.json"; a.click();
 };
 stat(); render();
