@@ -3,6 +3,7 @@ package com.reddol18.phototracer.bench_app
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -15,6 +16,8 @@ import android.graphics.PointF
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
+import android.provider.MediaStore
+import android.util.Base64
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
@@ -24,6 +27,8 @@ import com.google.mlkit.vision.face.FaceLandmark
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
@@ -166,6 +171,68 @@ class Benchmark(private val ctx: Context, private val progress: (String) -> Unit
         return out.absolutePath
     }
 
+    /**
+     * 모델 결정용(384 대 512): bench/embed.txt 의 MediaStore 사진 원본을 모델 하나로 임베딩해
+     * embed_<모델>_<ms>.json 으로 쓴다. 벡터는 float32 리틀엔디언을 이어 붙여 base64로 싣는다(사진 순서 = ids).
+     * 원본 사진은 폰 밖으로 나가지 않고 벡터만 나간다.
+     * 끊겨도 이어 한다: 사진마다 embed_<모델>.part 에 "ID 벡터" 한 줄을 덧붙이고, 다시 시작하면 그 사진들은 건너뛴다.
+     */
+    fun embedMedia(model: String): String {
+        val ids = File(dir, "embed.txt").readLines().mapNotNull { it.trim().toLongOrNull() }
+        require(ids.isNotEmpty()) { "embed.txt 가 비었습니다" }
+        val s = session(File(File(dir, "models"), model))
+        val res = resOf(s)
+        val start = state()
+        val part = File(dir, "embed_${model.removeSuffix(".onnx")}.part")
+        val saved = HashMap<Long, FloatArray>()
+        if (part.exists()) part.readLines().forEach { line ->
+            val f = line.split(' ')
+            f[0].toLongOrNull()?.let { id -> saved[id] = FloatArray(f.size - 1) { f[it + 1].toFloat() } }
+        }
+        if (saved.isNotEmpty()) progress("이어 하기: 이미 끝난 ${saved.size}장은 건너뜀")
+        val vecs = ArrayList<FloatArray>()
+        val done = JSONArray()
+        val fail = JSONArray()
+        val times = ArrayList<Double>()
+        ids.forEachIndexed { i, id ->
+            saved[id]?.let { v ->
+                vecs.add(v); done.put(id)
+                return@forEachIndexed
+            }
+            val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            val bmp = decode(ImageDecoder.createSource(ctx.contentResolver, uri))
+            if (bmp == null) {
+                fail.put(id)
+            } else {
+                val t = System.nanoTime()
+                val v = embedImage(s, bmp, res)
+                times.add(ms(t))
+                vecs.add(v)
+                done.put(id)
+                part.appendText("$id ${v.joinToString(" ")}\n")
+                part.setReadable(true, false) // PC가 adb로 진행 상황을 읽을 수 있게(앱 파일은 기본이 앱 전용)
+                bmp.recycle()
+            }
+            if ((i + 1) % 25 == 0 || i + 1 == ids.size) {
+                val st = state()
+                progress("임베딩 $model ${i + 1}/${ids.size} · 실패 ${fail.length()} · 최근 ${times.lastOrNull()?.toInt()}ms" +
+                    " · 발열 ${st.optInt("thermal")} · 배터리 ${st.optInt("battery_pct")}% ${st.optDouble("battery_temp_c")}℃")
+            }
+        }
+        s.close()
+        val bytes = ByteBuffer.allocate(vecs.sumOf { it.size } * 4).order(ByteOrder.LITTLE_ENDIAN)
+        vecs.forEach { v -> v.forEach { bytes.putFloat(it) } }
+        val out = File(dir, "embed_${model.removeSuffix(".onnx")}_${System.currentTimeMillis()}.json")
+        out.writeText(JSONObject().put("model", model).put("res", res).put("ids", done).put("fail", fail)
+            .put("dim", vecs.firstOrNull()?.size ?: 0).put("median_ms", times.sorted().getOrNull(times.size / 2) ?: 0.0)
+            .put("start", start).put("end", state())
+            .put("vectors", Base64.encodeToString(bytes.array(), Base64.NO_WRAP)).toString())
+        out.setReadable(true, false)
+        part.delete()
+        progress("완료: ${out.absolutePath}")
+        return out.absolutePath
+    }
+
     private fun JSONObject.getOrCreate(key: String): JSONObject =
         optJSONObject(key) ?: JSONObject().also { put(key, it) }
 
@@ -184,8 +251,10 @@ class Benchmark(private val ctx: Context, private val progress: (String) -> Unit
     }
 
     /** HEIC 포함 디코드(EXIF 회전 반영). 긴 변을 DETECT_LONG_SIDE 이하로 줄인다. */
-    private fun decode(file: File): Bitmap? = try {
-        ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
+    private fun decode(file: File): Bitmap? = decode(ImageDecoder.createSource(file))
+
+    private fun decode(source: ImageDecoder.Source): Bitmap? = try {
+        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             val long = maxOf(info.size.width, info.size.height)
             if (long > DETECT_LONG_SIDE) {
                 val s = DETECT_LONG_SIDE.toFloat() / long

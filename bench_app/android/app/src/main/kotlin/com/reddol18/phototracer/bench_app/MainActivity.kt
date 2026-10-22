@@ -35,6 +35,16 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+        // --es embed vision_384_w8.onnx: bench/embed.txt 의 사진 원본을 그 모델로 임베딩한다(진행은 logcat Bench:I)
+        intent?.getStringExtra("embed")?.let { model ->
+            worker.execute {
+                try {
+                    Benchmark(this) { line -> Log.i("Bench", line) }.embedMedia(model)
+                } catch (e: Throwable) {
+                    Log.e("Bench", "임베딩 실패", e)
+                }
+            }
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

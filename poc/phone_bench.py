@@ -7,6 +7,7 @@
   uv run phone_bench.py report FILE     # 받은 결과 JSON만 다시 정리
   uv run phone_bench.py scan            # 갤러리 메타데이터(날짜·출처 폴더·GPS 100m 단위)만 받기 → time_events.py
   uv run phone_bench.py thumbs          # time_events.py가 고른 사진만 160px 썸네일로 받기 → event_review.py
+  uv run phone_bench.py embed --siglip vision_384_w8.onnx   # 최종 구간 대표 사진 원본을 폰에서 임베딩, 벡터만 받기
 결과 정리에는 PC 결과와의 비교가 들어간다:
   - ML Kit 얼굴 수 vs PC YuNet 얼굴 수 (eval_data/photos.csv)
   - 폰 SigLIP 임베딩 vs PC onnxruntime 임베딩 (같은 ONNX, 전처리 차이 확인)
@@ -114,9 +115,8 @@ def run() -> Path:
     return launch_and_fetch("autorun", "result_")
 
 
-def scan() -> Path:
-    """갤러리 메타데이터만 읽는다(사진 픽셀은 읽지 않음). 권한은 화면 대신 pm grant로 주고 확인한다."""
-    adb("install", "-r", str(APK))
+def grant() -> None:
+    """갤러리 권한은 화면 대신 pm grant로 주고 확인한다."""
     perms = ["android.permission.READ_MEDIA_IMAGES", "android.permission.ACCESS_MEDIA_LOCATION"]
     for p in perms:
         adb("shell", "pm", "grant", PKG, p)
@@ -124,15 +124,44 @@ def scan() -> Path:
     for p in perms:
         if f"{p}: granted=true" not in dump:
             sys.exit(f"권한이 안 들어갔습니다: {p}")
+
+
+def scan() -> Path:
+    """갤러리 메타데이터만 읽는다(사진 픽셀은 읽지 않음)."""
+    adb("install", "-r", str(APK))
+    grant()
     return launch_and_fetch("scan", "meta_")
 
 
-def launch_and_fetch(extra: str, prefix: str) -> Path:
+def embed(models: list[str]) -> list[Path]:
+    """최종 구간(segments.py)의 대표 사진 원본을 폰에서 모델별로 임베딩해 벡터만 받는다 → search_eval.py --phone"""
+    from segments import final_events, photo_features, representatives
+    meta = sorted(OUT.glob("meta_*.json"))[-1]
+    events, _, shot = final_events(meta)
+    F = photo_features(shot)
+    ids = [i for e in events for i in representatives(e, F)]
+    adb("install", "-r", str(APK))
+    grant()
+    have = adb("shell", "ls", f"{REMOTE}/models")
+    for m in models:
+        if m not in have:
+            sys.exit(f"폰에 모델이 없습니다: {m} (phone_bench.py push)")
+    push_text("embed.txt", "\n".join(map(str, ids)))
+    print(f"대표 사진 {len(ids)}장 (구간 {len(events)}개) · 모델 {models}")
+    adb("shell", "svc", "power", "stayon", "true")  # 오래 걸리므로 화면이 꺼져 앱이 멈추지 않게
+    try:
+        return [launch_and_fetch("embed", "embed_", value=m) for m in models]
+    finally:
+        adb("shell", "svc", "power", "stayon", "false")
+
+
+def launch_and_fetch(extra: str, prefix: str, value: str | None = None) -> Path:
     before = set(adb("shell", "ls", REMOTE).split())
     adb("shell", "am", "force-stop", PKG)
     adb("logcat", "-c")
-    adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", "--ez", extra, "true")
-    print("실행 중… (화면을 켜 둔 채로 두세요)")
+    flag = ["--ez", extra, "true"] if value is None else ["--es", extra, value]
+    adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", *flag)
+    print("실행 중… (화면을 켜 둔 채로 두세요)", flush=True)
     start = time.time()
     while True:
         time.sleep(10)
@@ -145,7 +174,10 @@ def launch_and_fetch(extra: str, prefix: str) -> Path:
             sys.exit(f"앱 측정 실패:\n{err[-3000:]}")
         if not adb("shell", "pidof", PKG, check=False).strip():
             sys.exit("앱이 종료됐습니다 (logcat 확인)")
-        print(f"  {int(time.time() - start)}초 경과")
+        # 앱이 남긴 마지막 진행 줄(Bench:I)을 함께 보여 준다 — 경과 시간만으로는 진행률을 알 수 없었다
+        info = [l for l in adb("logcat", "-d", "-s", "Bench:I").splitlines() if "Bench" in l]
+        last = info[-1].split("Bench", 1)[1].lstrip(" :") if info else ""
+        print(f"  {int(time.time() - start)}초 경과 {last}", flush=True)
     OUT.mkdir(parents=True, exist_ok=True)
     dst = OUT / new[0]
     adb("pull", f"{REMOTE}/{new[0]}", str(dst))
@@ -208,7 +240,7 @@ def report(path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["push", "config", "run", "report", "scan", "thumbs"])
+    ap.add_argument("cmd", choices=["push", "config", "run", "report", "scan", "thumbs", "embed"])
     ap.add_argument("file", nargs="?", type=Path)
     ap.add_argument("--limit", type=int, default=DEFAULT_CONFIG["limit"])
     ap.add_argument("--xnnpack", action="store_true")
@@ -225,6 +257,8 @@ def main() -> None:
         print(f"받음: {scan()}")
     elif args.cmd == "thumbs":
         print(f"받음: {thumbs()}")
+    elif args.cmd == "embed":  # --siglip 으로 모델을 고른다 (기본값은 5개라 꼭 지정)
+        print(f"받음: {embed(args.siglip)}")
     elif args.cmd == "run":
         report(run())
     else:

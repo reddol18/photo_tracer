@@ -9,6 +9,7 @@
 설명 문장이 똑같은 구간(예: 같은 병원 식사 여러 번)은 서로 정답으로 본다.
 구간·대표 사진은 segments.py(사용자 판정 모두 반영). 이미지 입력은 160px 썸네일(폰 원본보다 불리).
 """
+import base64
 import json
 import sys
 from pathlib import Path
@@ -21,7 +22,18 @@ from export_siglip import MODEL_ID, OUT, TEXT_LEN, session
 from segments import EVAL, final_events, photo_features, representatives
 
 
+def phone_vectors(path: Path) -> dict[int, np.ndarray]:
+    """phone_bench.py embed 결과: 폰에서 원본으로 계산한 대표 사진 벡터."""
+    r = json.loads(path.read_text(encoding="utf-8"))
+    v = np.frombuffer(base64.b64decode(r["vectors"]), dtype="<f4").reshape(len(r["ids"]), r["dim"])
+    print(f"폰 벡터 {path.name}: {r['model']} · {len(r['ids'])}장 · 실패 {len(r['fail'])} · 장당 {r['median_ms']:.0f}ms"
+          f" · 배터리 {r['start']['battery_pct']}→{r['end']['battery_pct']}% · 발열 {r['start']['thermal']}→{r['end']['thermal']}")
+    return dict(zip(r["ids"], v))
+
+
 def main() -> None:
+    # 둘째 인자 이후: 폰 임베딩 파일들(embed_*.json). 주면 썸네일 대신 그 벡터로 '대표 평균'을 모델별로 비교한다
+    phone = [Path(p) for p in sys.argv[2:]]
     events, _, shot = final_events(Path(sys.argv[1]))
     truth = {e["key"]: e for e in json.loads((EVAL / "describe_truth.json").read_text(encoding="utf-8"))["events"]}
     keys = [e[0]["id"] for e in events]
@@ -51,6 +63,14 @@ def main() -> None:
         "대표 최대": np.array([[max(float(q @ norm(E[x])) for x in r) for r in R] for q in Q]),
         "전체 최대": np.array([[max(float(q @ norm(E[p["id"]])) for p in e) for e in events] for q in Q]),
     }
+    for path in phone:
+        P = phone_vectors(path)
+        lost = [x for r in R for x in r if x not in P]
+        if lost:
+            print(f"  폰에서 못 읽은 대표 사진 {len(lost)}장은 그 구간의 나머지 대표로만 계산")
+        mean = norm(np.array([np.mean([P[x] for x in r if x in P] or [E[r[0]]], axis=0) for r in R]))
+        name = json.loads(path.read_text(encoding="utf-8"))["model"].removeprefix("vision_").removesuffix(".onnx")
+        scores[f"폰 {name}"] = Q @ mean.T
     same = {t: {i for i, u in enumerate(texts) if u == t} for t in set(texts)}
     n = len(events)
     print(f"구간 {n}개 · 검색어 {n}개(설명이 같은 구간 묶음 {sum(len(v) > 1 for v in same.values())}개) · "
@@ -64,9 +84,10 @@ def main() -> None:
         ranks = np.array(ranks)
         print(f"  {name}   {np.mean(ranks <= 1):6.1%}  {np.mean(ranks <= 5):6.1%}  {np.mean(ranks <= 10):6.1%}"
               f"   {np.median(ranks):.0f}")
-        if name == "대표 평균":
+        if name == "대표 평균" or name.startswith("폰"):
             worst = np.argsort(-ranks)[:8]
-            print("    가장 못 찾은 검색어:", [(texts[i], int(ranks[i])) for i in worst])
+            if name == "대표 평균":
+                print("    가장 못 찾은 검색어:", [(texts[i], int(ranks[i])) for i in worst])
             # 실제 검색은 "작년 여름 바닷가"처럼 날짜를 함께 말하는 경우가 많다: 같은 해·같은 달 구간 안에서만 순위
             for unit, cut in (("같은 해", 4), ("같은 달", 7)):
                 period = [e[0]["t"].isoformat()[:cut] for e in events]
