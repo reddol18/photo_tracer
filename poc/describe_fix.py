@@ -54,24 +54,31 @@ function stat() {
 function render() {
   const f = fsel.value;
   document.getElementById("list").innerHTML = E.filter(e => e.when.slice(0, 4) === ysel.value &&
-      (f === "all" || (f === "unsure" && !e.sure) || (f === "edited" && st[e.key] !== undefined))).map(e => {
+      (f === "all" || (f === "unsure" && !e.sure) || (f === "edited" && st[e.key] !== undefined))).map(item).join("");
+}
+// 고친 구간 하나만 다시 그린다. 목록 전체를 다시 그리면 방금 클릭한 다른 입력창이 새로 만들어져 포커스를 잃는다
+function redraw(key) {
+  const box = document.querySelector(`.e[data-key="${key}"]`);
+  if (box) box.outerHTML = item(E.find(x => String(x.key) === String(key)));
+}
+function item(e) {
     const edited = st[e.key] !== undefined;
     return `<div class="e ${edited ? "edited" : ""}" data-key="${e.key}"><div class="when"><span>${e.when}</span><span>사진 ${e.photos}장</span>
         ${e.sure ? "" : `<span class="badge">확인 필요</span>`}${e.unresolved ? `<span class="badge">여러 일이 섞인 구간</span>` : ""}</div>
       <div class="row"><input value="${esc(edited ? st[e.key] : e.text)}" data-key="${e.key}">
         ${edited ? `<button data-undo="${e.key}">되돌리기</button>` : ""}</div>
       ${edited ? `<div class="orig">원래 설명: ${esc(e.text)}</div>` : ""}
-      <div class="all">${e.ids.map(id => `<img loading="lazy" src="phone/thumbs/${id}.jpg" alt="">`).join("")}</div></div>`; }).join("");
+      <div class="all">${e.ids.map(id => `<img loading="lazy" src="phone/thumbs/${id}.jpg" alt="">`).join("")}</div></div>`;
 }
 const list = document.getElementById("list");
 list.addEventListener("change", ev => {
   const t = ev.target; if (!t.dataset.key) return;
   const e = E.find(x => String(x.key) === t.dataset.key), v = t.value.trim();
   if (v === e.text || v === "") delete st[e.key]; else st[e.key] = v;
-  persist(); render();
+  persist(); redraw(e.key);
 });
 list.addEventListener("keydown", ev => { if (ev.key === "Enter" && ev.target.dataset.key) ev.target.blur(); });
-list.addEventListener("click", ev => { const k = ev.target.dataset.undo; if (k) { delete st[k]; persist(); render(); } });
+list.addEventListener("click", ev => { const k = ev.target.dataset.undo; if (k) { delete st[k]; persist(); redraw(k); } });
 ysel.onchange = () => { render(); window.scrollTo(0, 0); };
 fsel.onchange = render;
 document.getElementById("save").onclick = () => {
