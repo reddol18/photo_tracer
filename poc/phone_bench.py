@@ -5,6 +5,7 @@
   uv run phone_bench.py config --limit 15 --xnnpack --siglip vision_384_w8.onnx   # 설정만 바꾸기(넣은 뒤 폰에서 다시 읽어 확인)
   uv run phone_bench.py run             # 앱을 autorun으로 띄우고 끝날 때까지 기다린 뒤 결과를 받아 정리
   uv run phone_bench.py report FILE     # 받은 결과 JSON만 다시 정리
+  uv run phone_bench.py scan            # 갤러리 메타데이터(날짜·출처 폴더·GPS 100m 단위)만 받기 → time_events.py
 결과 정리에는 PC 결과와의 비교가 들어간다:
   - ML Kit 얼굴 수 vs PC YuNet 얼굴 수 (eval_data/photos.csv)
   - 폰 SigLIP 임베딩 vs PC onnxruntime 임베딩 (같은 ONNX, 전처리 차이 확인)
@@ -83,16 +84,33 @@ def push_config(config: dict) -> None:
 
 
 def run() -> Path:
-    before = set(adb("shell", "ls", REMOTE).split())
     print(f"폰 설정: {adb('shell', 'cat', f'{REMOTE}/config.json').strip()}")
+    return launch_and_fetch("autorun", "result_")
+
+
+def scan() -> Path:
+    """갤러리 메타데이터만 읽는다(사진 픽셀은 읽지 않음). 권한은 화면 대신 pm grant로 주고 확인한다."""
+    adb("install", "-r", str(APK))
+    perms = ["android.permission.READ_MEDIA_IMAGES", "android.permission.ACCESS_MEDIA_LOCATION"]
+    for p in perms:
+        adb("shell", "pm", "grant", PKG, p)
+    dump = adb("shell", "dumpsys", "package", PKG)
+    for p in perms:
+        if f"{p}: granted=true" not in dump:
+            sys.exit(f"권한이 안 들어갔습니다: {p}")
+    return launch_and_fetch("scan", "meta_")
+
+
+def launch_and_fetch(extra: str, prefix: str) -> Path:
+    before = set(adb("shell", "ls", REMOTE).split())
     adb("shell", "am", "force-stop", PKG)
     adb("logcat", "-c")
-    adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", "--ez", "autorun", "true")
-    print("측정 중… (화면을 켜 둔 채로 두세요)")
+    adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", "--ez", extra, "true")
+    print("실행 중… (화면을 켜 둔 채로 두세요)")
     start = time.time()
     while True:
         time.sleep(10)
-        new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith("result_") and n not in before]
+        new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith(prefix) and n not in before]
         if new:
             break
         # 결과 파일만 기다리면 앱 안의 오류·종료를 놓친다
@@ -164,7 +182,7 @@ def report(path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["push", "config", "run", "report"])
+    ap.add_argument("cmd", choices=["push", "config", "run", "report", "scan"])
     ap.add_argument("file", nargs="?", type=Path)
     ap.add_argument("--limit", type=int, default=DEFAULT_CONFIG["limit"])
     ap.add_argument("--xnnpack", action="store_true")
@@ -177,6 +195,8 @@ def main() -> None:
         push(config)
     elif args.cmd == "config":  # 사진·모델은 그대로 두고 설정만 바꾼다
         push_config(config)
+    elif args.cmd == "scan":
+        print(f"받음: {scan()}")
     elif args.cmd == "run":
         report(run())
     else:
