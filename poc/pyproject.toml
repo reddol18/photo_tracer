@@ -1,0 +1,12 @@
+[project]
+name = "photo-tracer-poc"
+version = "0.1.0"
+description = "0단계 검증: 얼굴 검출·임베딩·클러스터링 정확도를 PC에서 측정"
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python>=4.10",
+    "numpy>=1.26",
+    "pillow>=10.4",
+    "pillow-heif>=0.18",
+    "scikit-learn>=1.5",
+]

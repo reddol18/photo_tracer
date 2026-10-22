@@ -1,0 +1,23 @@
+# 평가용 가족 사진·결과물은 저장소에 올리지 않는다
+eval_data/
+*.jpg
+*.jpeg
+*.png
+*.heic
+
+# 모델 가중치 (다운로드 스크립트로 받음)
+models/
+*.onnx
+*.tflite
+
+# Python
+__pycache__/
+.venv/
+
+# Flutter / Android
+build/
+.dart_tool/
+.gradle/
+local.properties
+*.iml
+.idea/
