@@ -44,6 +44,23 @@ def candidates(shot: list[dict]) -> list[tuple[list[dict], list[dict]]]:
     return [(a, b) for a, b in zip(segs, segs[1:]) if (b[0]["t"] - a[-1]["t"]).total_seconds() <= 3 * 3600]
 
 
+def corrected_events(shot: list[dict], labels: dict[str, str]) -> list[list[dict]]:
+    """기본 규칙(3시간·1km)에 경계 정답을 반영한 구간. 후보 경계는 같은 일이면 잇고 다른 일이면 자른다.
+    모르겠음·미판정은 기본 규칙을 따른다. 1시간 안쪽 공백은 후보가 아니라서 여기서는 바뀌지 않는다."""
+    old_cut = {e[0]["id"] for e in split_place(shot, 3, 1.0)[1:]}
+    segs = split_place(shot, 1, 1.0)
+    events = [list(segs[0])]
+    for a, b in zip(segs, segs[1:]):
+        c = b[0]["id"]
+        label = labels.get(str(c))
+        long_gap = (b[0]["t"] - a[-1]["t"]).total_seconds() > 3 * 3600
+        if long_gap or label == "diff" or (label not in ("same", "diff") and c in old_cut):
+            events.append(list(b))
+        else:
+            events[-1].extend(b)
+    return events
+
+
 def main() -> None:
     shot = load_shot(Path(sys.argv[1]))
     review = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
