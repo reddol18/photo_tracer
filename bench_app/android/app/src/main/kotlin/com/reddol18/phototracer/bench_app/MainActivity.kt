@@ -2,6 +2,7 @@ package com.reddol18.phototracer.bench_app
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -25,6 +26,7 @@ class MainActivity : FlutterActivity() {
                         val path = bench.run()
                         main.post { result.success(path) }
                     } catch (e: Throwable) {
+                        Log.e("Bench", "측정 실패", e)
                         main.post { result.error("bench", e.toString(), e.stackTraceToString()) }
                     }
                 }

@@ -35,6 +35,9 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // 측정 앱이라 크기는 상관없다. R8이 ONNX Runtime·ML Kit의 JNI/리플렉션 클래스를 지우지 않게 끈다
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

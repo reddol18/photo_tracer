@@ -2,6 +2,7 @@
 
 사용:
   uv run phone_bench.py push            # APK 설치, 사진·모델·설정을 폰의 앱 전용 폴더에 복사
+  uv run phone_bench.py config --limit 15 --xnnpack --siglip vision_384_w8.onnx   # 설정만 바꾸기(넣은 뒤 폰에서 다시 읽어 확인)
   uv run phone_bench.py run             # 앱을 autorun으로 띄우고 끝날 때까지 기다린 뒤 결과를 받아 정리
   uv run phone_bench.py report FILE     # 받은 결과 JSON만 다시 정리
 결과 정리에는 PC 결과와의 비교가 들어간다:
@@ -57,15 +58,35 @@ def push(config: dict) -> None:
     print(f"사진 {len(files)}장…")
     for p in files:  # 연도 폴더 이름을 앞에 붙여 이름 충돌을 막고, PC 결과와 맞춰 볼 수 있게 한다
         adb("push", str(p), f"{REMOTE}/photos/{p.parent.name}__{p.name}")
+    # adb가 만든 폴더는 shell 소유(rwxrws---)라 앱 계정이 목록을 못 읽고 결과도 못 쓴다
+    adb("shell", "chmod", "777", REMOTE, f"{REMOTE}/photos", f"{REMOTE}/models")
+    push_config(config)
+
+
+def push_config(config: dict) -> None:
+    """설정만 바꿔 넣는다. 넣은 뒤 폰에서 다시 읽어 내용·권한을 확인하고, 다르면 멈춘다."""
     cfg = EVAL / "phone_config.json"
-    cfg.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-    adb("push", str(cfg), f"{REMOTE}/config.json")
-    print("완료")
+    text = json.dumps(config, ensure_ascii=False)
+    cfg.write_text(text, encoding="utf-8")
+    # 직접 덮어쓰면 fchown 실패로 기존 파일만 지워진다. 임시 폴더를 거쳐 복사하고, 복사본은 shell 전용이라 권한을 연다
+    adb("push", str(cfg), "/data/local/tmp/config.json")
+    adb("shell", "cp", "/data/local/tmp/config.json", f"{REMOTE}/config.json")
+    adb("shell", "chmod", "666", f"{REMOTE}/config.json")
+    got = adb("shell", "cat", f"{REMOTE}/config.json").strip()
+    if got != text:
+        sys.exit(f"폰의 설정이 넣은 것과 다릅니다:\n  넣음 {text}\n  폰   {got}")
+    for line in adb("shell", "ls", "-ld", REMOTE, f"{REMOTE}/photos", f"{REMOTE}/models",
+                    f"{REMOTE}/config.json").splitlines():
+        if not line.startswith(("drwxrwxrwx", "-rw-rw-rw-")):
+            sys.exit(f"앱이 못 읽는 권한: {line}")
+    print(f"설정 확인됨: {got}")
 
 
 def run() -> Path:
     before = set(adb("shell", "ls", REMOTE).split())
+    print(f"폰 설정: {adb('shell', 'cat', f'{REMOTE}/config.json').strip()}")
     adb("shell", "am", "force-stop", PKG)
+    adb("logcat", "-c")
     adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", "--ez", "autorun", "true")
     print("측정 중… (화면을 켜 둔 채로 두세요)")
     start = time.time()
@@ -74,10 +95,18 @@ def run() -> Path:
         new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith("result_") and n not in before]
         if new:
             break
+        # 결과 파일만 기다리면 앱 안의 오류·종료를 놓친다
+        err = adb("logcat", "-d", "-s", "Bench:E")
+        if "Bench" in err:
+            sys.exit(f"앱 측정 실패:\n{err[-3000:]}")
+        if not adb("shell", "pidof", PKG, check=False).strip():
+            sys.exit("앱이 종료됐습니다 (logcat 확인)")
         print(f"  {int(time.time() - start)}초 경과")
     OUT.mkdir(parents=True, exist_ok=True)
     dst = OUT / new[0]
     adb("pull", f"{REMOTE}/{new[0]}", str(dst))
+    if dst.stat().st_size == 0:
+        sys.exit(f"받은 결과 파일이 비어 있습니다: {dst}")
     return dst
 
 
@@ -124,7 +153,7 @@ def report(path: Path) -> None:
     print("\nSigLIP 폰 vs PC 코사인 (같은 모델, 디코드·리사이즈 차이만 남음)")
     for name, embs in r.get("embeddings", {}).items():
         sess = ort.InferenceSession(str(MODELS / "siglip" / name), providers=["CPUExecutionProvider"])
-        res = int(name.split("_")[1])
+        res = int(Path(name).stem.split("_")[1])
         cos = []
         for photo, vec in embs.items():
             year, fname = photo.split("__", 1)
@@ -135,13 +164,19 @@ def report(path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["push", "run", "report"])
+    ap.add_argument("cmd", choices=["push", "config", "run", "report"])
     ap.add_argument("file", nargs="?", type=Path)
     ap.add_argument("--limit", type=int, default=DEFAULT_CONFIG["limit"])
     ap.add_argument("--xnnpack", action="store_true")
+    ap.add_argument("--siglip", nargs="+", default=DEFAULT_CONFIG["siglip"])
+    ap.add_argument("--dump", type=int, default=DEFAULT_CONFIG["dump"])
     args = ap.parse_args()
+    config = {**DEFAULT_CONFIG, "limit": args.limit, "xnnpack": args.xnnpack, "siglip": args.siglip,
+              "dump": args.dump}
     if args.cmd == "push":
-        push({**DEFAULT_CONFIG, "limit": args.limit, "xnnpack": args.xnnpack})
+        push(config)
+    elif args.cmd == "config":  # 사진·모델은 그대로 두고 설정만 바꾼다
+        push_config(config)
     elif args.cmd == "run":
         report(run())
     else:

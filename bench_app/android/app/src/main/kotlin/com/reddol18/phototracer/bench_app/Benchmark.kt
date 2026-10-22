@@ -46,7 +46,11 @@ class Benchmark(private val ctx: Context, private val progress: (String) -> Unit
             PointF(41.5493f, 92.3655f), PointF(70.7299f, 92.2041f),
         )
 
-        fun benchDir(ctx: Context): File = File(ctx.getExternalFilesDir(null), "bench").apply { mkdirs() }
+        // 앱이 쓴 결과 파일은 앱 계정 전용(rw-rw----)이라 adb pull이 막힌다. 열 때마다 읽기 권한을 연다
+        fun benchDir(ctx: Context): File = File(ctx.getExternalFilesDir(null), "bench").apply {
+            mkdirs()
+            listFiles()?.filter { it.name.startsWith("result_") }?.forEach { it.setReadable(true, false) }
+        }
     }
 
     private val dir = benchDir(ctx)
@@ -156,6 +160,7 @@ class Benchmark(private val ctx: Context, private val progress: (String) -> Unit
 
         val out = File(dir, "result_${System.currentTimeMillis()}.json")
         out.writeText(result.toString())
+        out.setReadable(true, false)
         progress("완료: ${out.absolutePath}")
         detector.close(); sface?.close(); siglip.forEach { it.second.close() }
         return out.absolutePath
