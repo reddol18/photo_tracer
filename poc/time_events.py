@@ -142,7 +142,7 @@ def main() -> None:
         pick = [e[int(j * step)] for j in range(min(8, len(e)))]
         moved = i > 0 and "lat" in events[i - 1][-1] and "lat" in e[0] and km(events[i - 1][-1], e[0]) > args.place_km
         review.append({"event": i, "start": e[0]["t"].isoformat(), "end": e[-1]["t"].isoformat(), "photos": len(e),
-                       "ids": [p["id"] for p in pick],
+                       "ids": [p["id"] for p in pick], "ts": [p["t"].isoformat() for p in pick],
                        "why": "" if i == 0 else ("이동" if moved and (e[0]["t"] - events[i - 1][-1]["t"]).total_seconds()
                                                   <= args.gap_h * 3600 else "공백")})
     (EVAL / "time_events.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
