@@ -34,6 +34,7 @@ h2{font-size:16px;margin:22px 0 6px;color:var(--sub)}
 .gap button.move{border-style:solid;background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 .strip img{cursor:pointer;border:3px solid transparent}.strip img.sel{border-color:var(--sel)}
 .strip img.moved{outline:2px dashed var(--accent);outline-offset:-5px}.empty{color:var(--sub);font-size:13px}
+.meta button.all{font-size:13px;padding:2px 10px}
 .count{font-variant-numeric:tabular-nums}
 #bar{position:fixed;left:0;right:0;bottom:0;z-index:3;background:var(--card);border-top:2px solid var(--sel);
   padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}#bar[hidden]{display:none}
@@ -42,7 +43,7 @@ h2{font-size:16px;margin:22px 0 6px;color:var(--sub)}
 <header><b>시간 구간 확인</b><select id="year"></select><span class="count" id="stat"></span>
 <button id="reset">처음부터 다시</button><button class="primary" id="save">결과 저장</button></header>
 <main><p class="help">기억과 다르게 나뉜 곳만 고쳐 주세요. 구간 사이 <b>↑ 앞 구간과 같은 일</b>: 한 번의 일이 둘로 쪼개졌을 때.
-구간 안 <b>여러 일이 섞임</b>: 서로 다른 일이 한 구간에 묶였을 때. 경계가 몇 장 어긋났으면 사진을 눌러 고른 뒤(Shift로 범위 선택)
+구간 안 <b>여러 일이 섞임</b>: 서로 다른 일이 한 구간에 묶였을 때. 경계가 몇 장 어긋났으면 사진을 눌러 고른 뒤(Shift로 범위, 전체 선택으로 구간 전체)
 구간 사이 버튼으로 앞·뒤 구간에 옮기세요. 아무것도 안 누른 구간은 맞은 것으로 봅니다. 작업은 이 브라우저에 자동 저장됩니다.</p>
 <div id="list"></div></main>
 <div id="bar" hidden><b id="selcount"></b><span>구간 사이 버튼을 누르면 앞·뒤 구간으로 옮겨집니다</span>
@@ -94,6 +95,7 @@ function render() {
     const delta = ids.filter(id => PHOTO[id].home !== e.event).length - e.ids.filter(id => owner(id) !== e.event).length;
     out.push(`<div class="ev ${mixed ? "mixed" : ""}"><div class="meta"><span class="t">${e.start.slice(11, 16)}–${e.end.slice(11, 16)}</span>
       <span>${e.photos}장${delta ? ` (${delta > 0 ? "+" : ""}${delta})` : ""} · ${fmtGap(e.dur_min)}</span><span class="sp"></span>
+      ${ids.length ? `<button class="all" data-all="${e.event}">${selEvent === e.event && sel.size === ids.length ? "선택 해제" : "전체 선택"}</button>` : ""}
       <label><input type="checkbox" data-mixed="${e.event}" ${mixed ? "checked" : ""}> 여러 일이 섞임</label></div>
       <div class="strip">${ids.map(id => `<img loading="lazy" src="phone/thumbs/${id}.jpg" alt="" data-id="${id}" data-ev="${e.event}"
         title="${PHOTO[id].t.slice(11, 16)}" class="${sel.has(id) ? "sel" : ""} ${PHOTO[id].home !== e.event ? "moved" : ""}">`).join("")
@@ -122,6 +124,13 @@ list.addEventListener("click", ev => {
     } else sel.has(id) ? sel.delete(id) : sel.add(id);
     lastClick = id;
     if (!sel.size) selEvent = null;
+    render();
+  } else if (t.dataset.all) {
+    const e = Number(t.dataset.all);
+    const ids = [...t.closest(".ev").querySelectorAll(".strip img")].map(i => i.dataset.id);
+    const all = selEvent === e && sel.size === ids.length;
+    sel.clear(); selEvent = lastClick = null;
+    if (!all) { ids.forEach(id => sel.add(id)); selEvent = e; }
     render();
   } else if (t.dataset.to) {
     const to = Number(t.dataset.to);
