@@ -32,11 +32,23 @@ def dist(a: list[dict], b: list[dict]) -> float:
     return cv2.compareHist(ha, hb, cv2.HISTCMP_BHATTACHARYYA)
 
 
-def main() -> None:
-    P = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["photos"]
-    review = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-    shot = sorted(({**p, "t": t} for p in P if source(p) in ("카메라", "기타 EXIF") and (t := taken(p))),
+def load_shot(meta: Path) -> list[dict]:
+    P = json.loads(meta.read_text(encoding="utf-8"))["photos"]
+    return sorted(({**p, "t": t} for p in P if source(p) in ("카메라", "기타 EXIF") and (t := taken(p))),
                   key=lambda p: p["t"])
+
+
+def candidates(shot: list[dict]) -> list[tuple[list[dict], list[dict]]]:
+    """애매한 경계 후보: 1시간 공백·1km 이동으로 자른 곳 중 3시간 넘는 공백이 아닌 곳. (앞 조각, 뒤 조각) 목록."""
+    segs = split_place(shot, 1, 1.0)
+    return [(a, b) for a, b in zip(segs, segs[1:]) if (b[0]["t"] - a[-1]["t"]).total_seconds() <= 3 * 3600]
+
+
+def main() -> None:
+    shot = load_shot(Path(sys.argv[1]))
+    review = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    # 셋째 인자: boundary_review.py 페이지에서 경계마다 직접 고른 정답(있으면 이것을 쓴다)
+    marked = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))["labels"] if len(sys.argv) > 3 else None
     pos = {p["id"]: i for i, p in enumerate(shot)}
     events = split_place(shot, 3, 1.0)
     where = {p["id"]: i for i, e in enumerate(events) for p in e}
@@ -45,12 +57,12 @@ def main() -> None:
     mixed = set(review["mixed"])
 
     rows = []
-    for e in split_place(shot, 1, 1.0)[1:]:
-        c = e[0]["id"]
+    for _, b in candidates(shot):
+        c = b[0]["id"]
         i = pos[c]
-        if (shot[i]["t"] - shot[i - 1]["t"]).total_seconds() > 3 * 3600:
-            continue  # 3시간 넘는 공백은 확실한 경계라 후보가 아니다
-        if c in old_cut:
+        if marked is not None:
+            label = {"same": "같은 일", "diff": "다른 일"}.get(marked.get(str(c)), "모름")
+        elif c in old_cut:
             label = "같은 일" if c in joined else "다른 일"
         else:
             label = "섞임 안" if where[c] in mixed else "같은 일"
@@ -62,7 +74,7 @@ def main() -> None:
     for label, ds in by.items():
         q = statistics.quantiles(ds, n=4) if len(ds) > 1 else ds * 3
         print(f"{label}: {len(ds)}개 · 거리 중앙값 {statistics.median(ds):.2f} · 사분위 {q[0]:.2f}–{q[2]:.2f}")
-    known = [(lab == "다른 일", d) for lab, d, _ in rows if lab != "섞임 안"]
+    known = [(lab == "다른 일", d) for lab, d, _ in rows if lab in ("같은 일", "다른 일")]
     print("문턱별: 거리 ≥ 문턱이면 자름 → 맞힌 수 / 전체")
     for th in np.arange(0.3, 0.75, 0.05):
         ok = sum((d >= th) == cut for cut, d in known)
