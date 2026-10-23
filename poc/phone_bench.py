@@ -165,7 +165,7 @@ def launch_and_fetch(extra: str, prefix: str, value: str | None = None) -> Path:
     start = time.time()
     while True:
         time.sleep(10)
-        new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith(prefix) and n not in before]
+        new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith(prefix) and n.endswith(".json") and n not in before]
         if new:
             break
         # 결과 파일만 기다리면 앱 안의 오류·종료를 놓친다
