@@ -9,7 +9,7 @@
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 0단계 | 모델·방식 검증 (PC 평가 + 실제 폰 측정) | 완료 |
-| 1단계 | Android MVP | 예정 |
+| 1단계 | Android MVP | 진행 중 — 사용자 여정을 따르는 미니 앱(`app/`)으로 밤 정리·검색을 실제 폰에서 시험 |
 | 2단계 | iOS | 예정 |
 
 ## 0단계에서 확인한 것
@@ -28,6 +28,7 @@
 |---|---|
 | `poc/` | PC 검증 스크립트 (Python, `uv`) — 얼굴 검출·인식 평가, SigLIP 변환·양자화 비교, 구간 나누기, 대표 사진, 검색 평가, 폰 측정 조작 |
 | `bench_app/` | 폰 측정 앱 (Flutter + Kotlin, onnxruntime-android, ML Kit) |
+| `app/` | 미니 앱: 설치 → 권한·배터리 예외 안내 → 충전 중 밤에 얼굴·장면 분석(WorkManager + 포그라운드 서비스) → 검색·인물·밤 작업 기록 |
 
 평가용 사진·라벨·결과(`eval_data/`)와 모델 가중치(`poc/models/`)는 개인정보와 용량 때문에 저장소에 넣지 않습니다.
 
@@ -39,6 +40,13 @@ uv sync
 uv run download_models.py      # 얼굴 검출·인식 모델 (OpenCV Zoo)
 uv run export_siglip.py        # SigLIP 2 → ONNX 변환·양자화
 uv run phone_bench.py --help   # 폰 측정 (adb 연결 필요)
+
+# 미니 앱
+uv run app_assets.py build     # 모델·토크나이저를 app assets로, 토크나이저 정답 파일 생성
+cd ..\app\android
+.\gradlew.bat :app:testDebugUnitTest   # Kotlin 토크나이저 = Python 토크나이저 (토큰 id까지)
+cd ..
+flutter build apk --release --target-platform android-arm64
 ```
 
 ## 쓰는 모델과 라이선스

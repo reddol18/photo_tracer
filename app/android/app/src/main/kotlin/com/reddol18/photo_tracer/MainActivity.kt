@@ -1,0 +1,184 @@
+package com.reddol18.photo_tracer
+
+import android.Manifest
+import android.content.ContentUris
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.MediaStore
+import android.provider.Settings
+import android.util.Log
+import android.util.Size
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.Executors
+
+/** 화면(Flutter)과 엔진(Kotlin) 사이 통로. 무거운 일은 작업 스레드에서 하고 결과만 넘긴다. */
+class MainActivity : FlutterActivity() {
+    private val worker = Executors.newSingleThreadExecutor()
+    private val thumbs = Executors.newFixedThreadPool(4)
+    private val main = Handler(Looper.getMainLooper())
+    private var permissionResult: MethodChannel.Result? = null
+
+    private val permissions = buildList {
+        add(if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE)
+        add(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun granted(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+    private fun photosGranted() = granted(permissions[0])
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        val db = Db.get(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app").setMethodCallHandler { call, result ->
+            fun bg(pool: java.util.concurrent.ExecutorService = worker, block: () -> Any?) = pool.execute {
+                try {
+                    val v = block()
+                    main.post { result.success(v) }
+                } catch (e: Throwable) {
+                    Log.e("PhotoTracer", "${call.method} 실패", e)
+                    main.post { result.error(call.method, e.toString(), null) }
+                }
+            }
+            when (call.method) {
+                "status" -> bg { status(db) }
+                "requestPermissions" -> {
+                    permissionResult = result
+                    requestPermissions(permissions.toTypedArray(), 1)
+                }
+                "openBatterySettings" -> {
+                    // 이 앱만 바로 묻는 창. 안 되면 전체 목록으로
+                    val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                    try { startActivity(direct) } catch (e: Exception) {
+                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    }
+                    result.success(null)
+                }
+                "openAppSettings" -> {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                    result.success(null)
+                }
+                "scan" -> bg {
+                    check(photosGranted()) { "사진 권한 없음" }
+                    IndexWorker.scheduleNight(this)
+                    Scanner(this).scan()
+                }
+                "startNow" -> { IndexWorker.startNow(this); result.success(null) }
+                "stopNow" -> { IndexWorker.stopNow(this); result.success(null) }
+                "search" -> bg { Search(this).search(call.argument<String>("q") ?: "") }
+                "segmentPhotos" -> bg {
+                    ids(db, "SELECT id FROM photos WHERE segment = ? ORDER BY taken_at", call.argument<Number>("id").toString())
+                }
+                "persons" -> bg {
+                    val out = ArrayList<Map<String, Any>>()
+                    db.readableDatabase.rawQuery("""SELECT person, COUNT(DISTINCT photo_id) n, MIN(id) FROM faces
+                        WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW} ORDER BY n DESC""", null).use {
+                        while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "n" to it.getInt(1), "face" to cover(db, it.getLong(0))))
+                    }
+                    out
+                }
+                "personPhotos" -> bg {
+                    ids(db, """SELECT DISTINCT p.id FROM faces f JOIN photos p ON p.id = f.photo_id WHERE f.person = ?
+                               ORDER BY COALESCE(p.taken_at, p.received_at, 0) DESC""", call.argument<Number>("id").toString())
+                }
+                "recluster" -> bg { People(this).cluster() }
+                "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
+                "faceThumb" -> bg(thumbs) { faceThumb(db, call.argument<Number>("id")!!.toLong()) }
+                "photoInfo" -> bg {
+                    db.readableDatabase.rawQuery("SELECT taken_at, date_source, received_at, name FROM photos WHERE id = ?",
+                        arrayOf(call.argument<Number>("id").toString())).use {
+                        if (!it.moveToFirst()) null else mapOf("taken" to (if (it.isNull(0)) null else it.getLong(0)),
+                            "date_source" to it.getString(1), "received" to (if (it.isNull(2)) null else it.getLong(2)))
+                    }
+                }
+                "runs" -> bg {
+                    val out = ArrayList<Map<String, Any?>>()
+                    db.readableDatabase.rawQuery("SELECT * FROM runs ORDER BY id DESC LIMIT 50", null).use { c ->
+                        while (c.moveToNext()) out.add((0 until c.columnCount).associate { i ->
+                            c.getColumnName(i) to when (c.getType(i)) {
+                                android.database.Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
+                                android.database.Cursor.FIELD_TYPE_FLOAT -> c.getDouble(i)
+                                android.database.Cursor.FIELD_TYPE_NULL -> null
+                                else -> c.getString(i)
+                            }
+                        })
+                    }
+                    out
+                }
+                "exportQueryVectors" -> bg { Search(this).exportQueryVectors() }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        permissionResult?.success(photosGranted())
+        permissionResult = null
+    }
+
+    private fun status(db: Db): Map<String, Any?> {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        val n = { sql: String -> db.count(sql) }
+        return mapOf(
+            "photos_permission" to photosGranted(),
+            "notifications" to (Build.VERSION.SDK_INT < 33 || granted(Manifest.permission.POST_NOTIFICATIONS)),
+            "battery_exempt" to pm.isIgnoringBatteryOptimizations(packageName),
+            "manufacturer" to Build.MANUFACTURER,
+            "running" to Indexer.isRunning(),
+            "photos" to n("SELECT COUNT(*) FROM photos"),
+            "failed" to n("SELECT COUNT(*) FROM photos WHERE failed = 1"),
+            "faces_done" to n("SELECT COUNT(*) FROM photos WHERE faces_done = 1"),
+            "segments" to n("SELECT COUNT(*) FROM segments"),
+            "vec_needed" to n("SELECT COUNT(*) FROM photos p WHERE ${Db.NEEDS_VECTOR}"),
+            "vec_done" to n("SELECT COUNT(*) FROM photos p JOIN vectors v ON v.photo_id = p.id WHERE ${Db.NEEDS_VECTOR}"),
+            "faces" to n("SELECT COUNT(*) FROM faces"),
+            "persons" to n("SELECT COUNT(*) FROM (SELECT person FROM faces WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW})"),
+        )
+    }
+
+    private fun ids(db: Db, sql: String, arg: String): List<Long> =
+        db.readableDatabase.rawQuery(sql, arrayOf(arg)).use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+
+    /** 묶음의 표지 얼굴: 가장 큰 얼굴 */
+    private fun cover(db: Db, person: Long): Long =
+        db.readableDatabase.rawQuery("SELECT id FROM faces WHERE person = ? ORDER BY w * h DESC LIMIT 1", arrayOf(person.toString()))
+            .use { if (it.moveToFirst()) it.getLong(0) else 0L }
+
+    private fun thumb(id: Long, size: Int): ByteArray {
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+        val bmp = contentResolver.loadThumbnail(uri, Size(size, size), null)
+        return jpeg(bmp)
+    }
+
+    private fun faceThumb(db: Db, faceId: Long): ByteArray? {
+        val f = db.readableDatabase.rawQuery("SELECT photo_id, x, y, w, h FROM faces WHERE id = ?", arrayOf(faceId.toString())).use {
+            if (!it.moveToFirst()) return null
+            listOf(it.getDouble(0), it.getDouble(1), it.getDouble(2), it.getDouble(3), it.getDouble(4))
+        }
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, f[0].toLong())
+        val bmp = contentResolver.loadThumbnail(uri, Size(768, 768), null)
+        // 얼굴 상자에 여백 30%
+        val cx = (f[1] + f[3] / 2) * bmp.width; val cy = (f[2] + f[4] / 2) * bmp.height
+        val half = maxOf(f[3] * bmp.width, f[4] * bmp.height) * 0.65
+        val r = Rect((cx - half).toInt().coerceAtLeast(0), (cy - half).toInt().coerceAtLeast(0),
+                     (cx + half).toInt().coerceAtMost(bmp.width), (cy + half).toInt().coerceAtMost(bmp.height))
+        if (r.width() < 2 || r.height() < 2) return jpeg(bmp)
+        val crop = Bitmap.createBitmap(bmp, r.left, r.top, r.width(), r.height())
+        bmp.recycle()
+        return jpeg(Bitmap.createScaledBitmap(crop, 160, 160, true))
+    }
+
+    private fun jpeg(bmp: Bitmap): ByteArray =
+        ByteArrayOutputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it); bmp.recycle(); it.toByteArray() }
+}
