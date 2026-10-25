@@ -7,6 +7,7 @@
   uv run phone_bench.py report FILE     # 받은 결과 JSON만 다시 정리
   uv run phone_bench.py scan            # 갤러리 메타데이터(날짜·출처 폴더·GPS 100m 단위)만 받기 → time_events.py
   uv run phone_bench.py thumbs          # time_events.py가 고른 사진만 160px 썸네일로 받기 → event_review.py
+  uv run phone_bench.py thumbs --undated   # 날짜 없는 사진만 썸네일로 받기 → 날짜 추정 시험
   uv run phone_bench.py embed --siglip vision_384_w8.onnx   # 최종 구간 대표 사진 원본을 폰에서 임베딩, 벡터만 받기
 결과 정리에는 PC 결과와의 비교가 들어간다:
   - ML Kit 얼굴 수 vs PC YuNet 얼굴 수 (eval_data/photos.csv)
@@ -91,13 +92,21 @@ def push_config(config: dict) -> None:
     print(f"설정 확인됨: {adb('shell', 'cat', f'{REMOTE}/config.json').strip()}")
 
 
-def thumbs() -> Path:
-    """time_events.py가 고른 사진만 폰에서 160px 썸네일로 만들어 eval_data/phone/thumbs/로 가져온다."""
-    events = json.loads((EVAL / "time_events.json").read_text(encoding="utf-8"))
-    ids = [i for e in events for i in e["ids"]]
-    adb("install", "-r", str(APK))
+def thumbs(undated: bool = False) -> Path:
+    """time_events.py가 고른 사진(undated면 날짜 없는 사진)만 폰에서 160px 썸네일로 만들어 eval_data/phone/thumbs/로 가져온다."""
+    if undated:
+        from time_events import source
+        meta = json.loads(sorted(OUT.glob("meta_*.json"))[-1].read_text(encoding="utf-8"))
+        ids = [p["id"] for p in meta["photos"] if source(p) == "날짜 없음"]
+        what = "날짜 없는 사진"
+    else:
+        events = json.loads((EVAL / "time_events.json").read_text(encoding="utf-8"))
+        ids = [i for e in events for i in e["ids"]]
+        what = f"구간 {len(events)}개"
+    adb("install", "-r", str(APK)); grant()
+    adb("shell", "mkdir", "-p", REMOTE)  # 앱 데이터를 지운 뒤에는 폴더가 없다
     push_text("thumbs.txt", "\n".join(map(str, ids)))
-    print(f"썸네일 {len(ids)}장 요청 (구간 {len(events)}개)")
+    print(f"썸네일 {len(ids)}장 요청 ({what})", flush=True)
     done = launch_and_fetch("thumbs", "thumbs_done_")
     made, fail = map(int, done.read_text().split())
     dst = OUT / "thumbs"
@@ -165,7 +174,7 @@ def launch_and_fetch(extra: str, prefix: str, value: str | None = None) -> Path:
     start = time.time()
     while True:
         time.sleep(10)
-        new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith(prefix) and n.endswith(".json") and n not in before]
+        new = [n for n in adb("shell", "ls", REMOTE).split() if n.startswith(prefix) and not n.endswith(".part") and n not in before]
         if new:
             break
         # 결과 파일만 기다리면 앱 안의 오류·종료를 놓친다
@@ -246,6 +255,7 @@ def main() -> None:
     ap.add_argument("--xnnpack", action="store_true")
     ap.add_argument("--siglip", nargs="+", default=DEFAULT_CONFIG["siglip"])
     ap.add_argument("--dump", type=int, default=DEFAULT_CONFIG["dump"])
+    ap.add_argument("--undated", action="store_true", help="thumbs: 날짜 없는 사진만")
     args = ap.parse_args()
     config = {**DEFAULT_CONFIG, "limit": args.limit, "xnnpack": args.xnnpack, "siglip": args.siglip,
               "dump": args.dump}
@@ -256,7 +266,7 @@ def main() -> None:
     elif args.cmd == "scan":
         print(f"받음: {scan()}")
     elif args.cmd == "thumbs":
-        print(f"받음: {thumbs()}")
+        print(f"받음: {thumbs(args.undated)}")
     elif args.cmd == "embed":  # --siglip 으로 모델을 고른다 (기본값은 5개라 꼭 지정)
         print(f"받음: {embed(args.siglip)}")
     elif args.cmd == "run":
