@@ -37,6 +37,12 @@ class Scanner(private val ctx: Context) {
         private val NAME_D = Regex("((?:19|20)\\d{2})-(\\d{2})-(\\d{2})")
         private val NAME_MS = Regex("(?<!\\d)(1[3-7]\\d{11})(?!\\d)")
 
+        /** 스캔 진행 (화면·알림용). 한 번에 하나만 돈다 — 겹쳐 부르면 앞의 스캔이 끝난 뒤 새 사진만 본다 */
+        @Volatile var phase: String? = null
+        @Volatile var done = 0
+        @Volatile var total = 0
+        private val lock = Any()
+
         /** 구간당 대표 사진 수: 1장 → 1, 2~3 → 1, 4~7 → 2, 8~15 → 3 … 최대 5 */
         fun reps(n: Int): Int = if (n <= 1) 1 else minOf(5, 31 - Integer.numberOfLeadingZeros(n)) // ⌊log2 n⌋
 
@@ -64,8 +70,12 @@ class Scanner(private val ctx: Context) {
 
     private val db = Db.get(ctx)
 
-    /** 반환: 새로 넣은 장 수 */
-    fun scan(): Int {
+    /** 반환: 새로 넣은 장 수. onProgress(읽은 장, 전체)는 100장마다 */
+    fun scan(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int = synchronized(lock) {
+        try { phase = "읽기"; done = 0; total = 0; scanLocked(onProgress) } finally { phase = null }
+    }
+
+    private fun scanLocked(onProgress: (Int, Int) -> Unit): Int {
         val t0 = System.currentTimeMillis()
         val w = db.writableDatabase
         val known = HashSet<Long>()
@@ -75,10 +85,17 @@ class Scanner(private val ctx: Context) {
             MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.WIDTH, MediaStore.Images.Media.HEIGHT)
         val seen = HashSet<Long>()
         var added = 0
-        ctx.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cols, null, null, null)?.use { c ->
+        // 200장씩 한 트랜잭션으로 넣는다 (한 장씩 커밋하면 느리다). 중간에 멈추면 마지막 묶음만 다시 읽는다
+        // 갤러리를 못 읽으면(권한 회수 등) 아무것도 지우지 않고 끝낸다
+        val cursor = ctx.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cols, null, null, null) ?: return 0
+        w.beginTransaction()
+        try { cursor.use { c ->
+            total = c.count
             while (c.moveToNext()) {
                 val id = c.getLong(0)
                 seen.add(id)
+                done = seen.size
+                if (done % 100 == 0) onProgress(done, total)
                 if (id in known) continue
                 val v = ContentValues()
                 val name = c.getString(1) ?: ""
@@ -99,9 +116,14 @@ class Scanner(private val ctx: Context) {
                 v.put("date_source", source)
                 w.insertWithOnConflict("photos", null, v, SQLiteDatabase.CONFLICT_REPLACE)
                 added++
-                if (added % 500 == 0) Log.i("PhotoTracer", "스캔: 새 사진 $added 장")
+                if (added % 200 == 0) {
+                    w.setTransactionSuccessful(); w.endTransaction(); w.beginTransaction()
+                    Log.i("PhotoTracer", "스캔: 새 사진 $added 장")
+                }
             }
-        }
+        }; w.setTransactionSuccessful() } finally { w.endTransaction() }
+        onProgress(done, total)
+        phase = "구간"
         val gone = known - seen
         if (gone.isNotEmpty()) {
             w.beginTransaction()

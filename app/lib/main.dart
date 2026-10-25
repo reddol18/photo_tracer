@@ -70,7 +70,6 @@ class SetupPage extends StatefulWidget {
 class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
   Map<String, dynamic>? s;
   Timer? timer;
-  bool scanning = false;
   String? error;
 
   @override
@@ -78,7 +77,7 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     refresh(scan: true);
-    timer = Timer.periodic(const Duration(seconds: 5), (_) => refresh());
+    timer = Timer.periodic(const Duration(seconds: 2), (_) => refresh());
   }
 
   @override
@@ -94,19 +93,22 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) refresh(scan: true);
   }
 
+  // 스캔은 백그라운드 작업(알림이 뜨는 FGS)으로 맡기고, 화면은 진행만 읽어 온다
   Future<void> refresh({bool scan = false}) async {
     try {
-      var st = Map<String, dynamic>.from(await channel.invokeMethod('status'));
-      if (scan && st['photos_permission'] == true && !scanning) {
-        setState(() => scanning = true);
-        await channel.invokeMethod('scan');
-        st = Map<String, dynamic>.from(await channel.invokeMethod('status'));
-        scanning = false;
-      }
+      if (scan) await channel.invokeMethod('scan');
+      final st = Map<String, dynamic>.from(await channel.invokeMethod('status'));
       if (mounted) setState(() { s = st; error = null; });
     } catch (e) {
-      if (mounted) setState(() { scanning = false; error = '$e'; });
+      if (mounted) setState(() => error = '$e');
     }
+  }
+
+  String scanText(Map<String, dynamic> st) {
+    if (st['scan_phase'] == '구간') return '시간 구간을 나누는 중…';
+    final total = st['scan_total'] as int;
+    if (total == 0) return '갤러리를 여는 중…';
+    return '갤러리를 읽는 중… ${fmtInt(st['scan_done'])} / ${fmtInt(total)}장 (다른 앱으로 가도 계속됩니다)';
   }
 
   Widget step(bool done, String title, String body, String button, VoidCallback onTap) => Card(
@@ -164,11 +166,14 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
               Text(st['running'] == true ? '지금 정리하고 있습니다' : (total > 0 && done >= total ? '정리가 끝났습니다' : '오늘 밤 충전기에 꽂아 두세요'),
                   style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
-              Text(scanning
-                  ? '갤러리를 읽는 중…'
+              Text(st['scan_phase'] != null
+                  ? scanText(st)
                   : '충전 중이고 화면이 꺼져 있을 때 조금씩 정리합니다. 처음에는 며칠 밤 걸릴 수 있습니다.'),
               const SizedBox(height: 12),
-              LinearProgressIndicator(value: total == 0 ? 0 : done / total),
+              LinearProgressIndicator(
+                  value: st['scan_phase'] != null
+                      ? ((st['scan_total'] as int) == 0 ? null : (st['scan_done'] as int) / (st['scan_total'] as int))
+                      : (total == 0 ? 0 : done / total)),
               const SizedBox(height: 8),
               Text('사진 ${fmtInt(photos)}장 · 시간 구간 ${fmtInt(st['segments'])}개'),
               Text('얼굴 확인 ${fmtInt(facesDone)} / ${fmtInt(photos)}장 · 찾은 얼굴 ${fmtInt(st['faces'])}개 · 인물 ${st['persons']}명'),

@@ -68,10 +68,9 @@ class MainActivity : FlutterActivity() {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                     result.success(null)
                 }
-                "scan" -> bg {
-                    check(photosGranted()) { "사진 권한 없음" }
-                    IndexWorker.scheduleNight(this)
-                    Scanner(this).scan()
+                "scan" -> {
+                    if (photosGranted()) { IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
+                    result.success(null)
                 }
                 "startNow" -> { IndexWorker.startNow(this); result.success(null) }
                 "stopNow" -> { IndexWorker.stopNow(this); result.success(null) }
@@ -136,6 +135,9 @@ class MainActivity : FlutterActivity() {
             "battery_exempt" to pm.isIgnoringBatteryOptimizations(packageName),
             "manufacturer" to Build.MANUFACTURER,
             "running" to Indexer.isRunning(),
+            "scan_phase" to Scanner.phase,
+            "scan_done" to Scanner.done,
+            "scan_total" to Scanner.total,
             "photos" to n("SELECT COUNT(*) FROM photos"),
             "failed" to n("SELECT COUNT(*) FROM photos WHERE failed = 1"),
             "faces_done" to n("SELECT COUNT(*) FROM photos WHERE faces_done = 1"),
