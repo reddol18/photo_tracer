@@ -59,7 +59,8 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
-        <!-- 샤오미 자동 시작 설정 화면을 바로 열기 위해 -->
+        <!-- 제조사 백그라운드 설정 화면(샤오미 자동 시작, 삼성 절전 예외 앱)을 바로 열기 위해 -->
         <package android:name="com.miui.securitycenter"/>
+        <package android:name="com.samsung.android.lool"/>
     </queries>
 </manifest>

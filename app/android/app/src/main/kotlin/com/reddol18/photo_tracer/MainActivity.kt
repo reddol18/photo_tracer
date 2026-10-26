@@ -68,14 +68,7 @@ class MainActivity : FlutterActivity() {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                     result.success(null)
                 }
-                "openAutostart" -> {
-                    // HyperOS(MIUI)는 앱 정보에 자동 시작이 없고 보안 앱의 목록에 있다. 없으면 앱 정보로
-                    val miui = Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")
-                    try { startActivity(miui) } catch (e: Exception) {
-                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-                    }
-                    result.success(null)
-                }
+                "openVendorSettings" -> { openVendorSettings(); result.success(null) }
                 "scan" -> {
                     if (photosGranted()) { IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     result.success(null)
@@ -155,6 +148,29 @@ class MainActivity : FlutterActivity() {
             "faces" to n("SELECT COUNT(*) FROM faces"),
             "persons" to n("SELECT COUNT(*) FROM (SELECT person FROM faces WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW})"),
         )
+    }
+
+    /**
+     * 제조사가 따로 두는 백그라운드 설정 화면. 화면 이름은 OS 버전마다 달라 앞에서부터 열어 보고, 다 안 되면 앱 정보로.
+     *   샤오미 HyperOS: 앱 정보에 자동 시작이 없고 보안 앱의 자동 시작 목록에 있다 (Redmi OS1.0에서 확인)
+     *   삼성 One UI: 배터리 → 백그라운드 사용 제한 → 절전 예외 앱 목록 (실기기 미확인 — 갤럭시에서 시험 필요)
+     */
+    private fun openVendorSettings() {
+        val screens = when {
+            Regex("xiaomi|redmi|poco", RegexOption.IGNORE_CASE).containsMatchIn(Build.MANUFACTURER) -> listOf(
+                "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity")
+            Build.MANUFACTURER.equals("samsung", ignoreCase = true) -> listOf(
+                "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.usage.CheckableAppListActivity",
+                "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.BatteryActivity",
+                "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity")
+            else -> emptyList()
+        }
+        for ((pkg, cls) in screens) {
+            try { startActivity(Intent().setClassName(pkg, cls)); return } catch (e: Exception) {
+                Log.w("PhotoTracer", "설정 화면 못 엶: $cls", e)
+            }
+        }
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
     }
 
     private fun ids(db: Db, sql: String, arg: String): List<Long> =

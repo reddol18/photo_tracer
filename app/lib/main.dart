@@ -60,6 +60,34 @@ String fmtInt(num v) => v.toInt().toString().replaceAllMapped(RegExp(r'\B(?=(\d{
 
 // ───────────────────────────── 정리 (설치 직후 안내 + 진행 상황)
 
+/// 제조사가 배터리 최적화 예외(3번)와 따로 앱을 재우거나 막는 설정. 기본 안드로이드(픽셀 등)는 3번이면 충분해 안내하지 않는다
+({String title, String body, String button})? vendorGuide(String manufacturer) {
+  final m = manufacturer.toLowerCase();
+  if (RegExp('xiaomi|redmi|poco').hasMatch(m)) {
+    return (
+      title: '샤오미·레드미 폰: 자동 시작',
+      body: '목록에서 Photo Tracer의 "자동 시작"을 켜 주세요. 끄면 앱이 꺼진 뒤(재부팅 등) 밤 정리가 다시 깨어나지 못할 수 있습니다.',
+      button: '자동 시작',
+    );
+  }
+  if (m == 'samsung') {
+    return (
+      title: '삼성 갤럭시: 절전 예외 앱',
+      body: '배터리 → 백그라운드 사용 제한 → "절전 예외 앱"에 Photo Tracer를 넣어 주세요. '
+          '며칠 앱을 열지 않으면 "잠자기 앱"으로 옮겨져 밤 정리가 멈출 수 있습니다.',
+      button: '설정 열기',
+    );
+  }
+  if (RegExp('oppo|realme|oneplus|vivo|iqoo|huawei|honor|meizu|asus').hasMatch(m)) {
+    return (
+      title: '이 폰: 백그라운드 실행 허용',
+      body: '앱 정보에서 배터리를 "제한 없음"으로 바꾸고, "자동 시작"이나 "백그라운드 실행 허용"이 있으면 켜 주세요.',
+      button: '앱 정보',
+    );
+  }
+  return null;
+}
+
 class SetupPage extends StatefulWidget {
   const SetupPage({super.key});
 
@@ -130,7 +158,7 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
     final vecDone = st['vec_done'] as int;
     final total = photos + vecNeeded;
     final done = facesDone + vecDone;
-    final xiaomi = RegExp('xiaomi|redmi|poco', caseSensitive: false).hasMatch('${st['manufacturer']}');
+    final vendor = vendorGuide('${st['manufacturer']}');
     return RefreshIndicator(
       onRefresh: () => refresh(scan: true),
       child: ListView(padding: const EdgeInsets.all(16), children: [
@@ -148,13 +176,13 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
         }),
         step(st['battery_exempt'] == true, '3. 배터리 최적화 예외',
             '밤새 정리하려면 시스템이 이 앱을 멈추지 않게 해야 합니다.', '설정', () => channel.invokeMethod('openBatterySettings')),
-        if (xiaomi)
+        if (vendor != null)
           Card(
             child: ListTile(
               leading: const Icon(Icons.info_outline),
-              title: const Text('샤오미·레드미 폰: 자동 시작'),
-              subtitle: const Text('목록에서 Photo Tracer의 "자동 시작"을 켜 주세요. 끄면 앱이 꺼진 뒤(재부팅 등) 밤 정리가 다시 깨어나지 못할 수 있습니다.'),
-              trailing: FilledButton.tonal(onPressed: () => channel.invokeMethod('openAutostart'), child: const Text('자동 시작')),
+              title: Text(vendor.title),
+              subtitle: Text(vendor.body),
+              trailing: FilledButton.tonal(onPressed: () => channel.invokeMethod('openVendorSettings'), child: Text(vendor.button)),
             ),
           ),
         const SizedBox(height: 16),
