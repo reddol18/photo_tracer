@@ -152,9 +152,9 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
           Card(
             child: ListTile(
               leading: const Icon(Icons.info_outline),
-              title: const Text('샤오미·레드미 폰'),
-              subtitle: const Text('앱 정보 → 배터리 절약 → "제한 없음", 그리고 "자동 시작"을 켜 주세요. 끄면 밤 정리가 중간에 멈춥니다.'),
-              trailing: FilledButton.tonal(onPressed: () => channel.invokeMethod('openAppSettings'), child: const Text('앱 정보')),
+              title: const Text('샤오미·레드미 폰: 자동 시작'),
+              subtitle: const Text('목록에서 Photo Tracer의 "자동 시작"을 켜 주세요. 끄면 앱이 꺼진 뒤(재부팅 등) 밤 정리가 다시 깨어나지 못할 수 있습니다.'),
+              trailing: FilledButton.tonal(onPressed: () => channel.invokeMethod('openAutostart'), child: const Text('자동 시작')),
             ),
           ),
         const SizedBox(height: 16),
@@ -183,15 +183,21 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
           ),
         ),
         const SizedBox(height: 8),
+        // 도는 중이면 멈춤만, 아니면 지금 시작만 (갤러리를 읽는 동안은 둘 다 기다림)
         Row(children: [
           Expanded(
             child: OutlinedButton(
-              onPressed: st['photos_permission'] == true ? () async { await channel.invokeMethod('startNow'); refresh(); } : null,
+              onPressed: st['photos_permission'] == true && st['running'] != true && st['scan_phase'] == null
+                  ? () async { await channel.invokeMethod('startNow'); refresh(); }
+                  : null,
               child: const Text('지금 시작 (시험용)'),
             ),
           ),
           const SizedBox(width: 8),
-          OutlinedButton(onPressed: () async { await channel.invokeMethod('stopNow'); refresh(); }, child: const Text('멈춤')),
+          OutlinedButton(
+            onPressed: st['running'] == true ? () async { await channel.invokeMethod('stopNow'); refresh(); } : null,
+            child: const Text('멈춤'),
+          ),
         ]),
         if (error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(error!, style: const TextStyle(color: Colors.red))),
       ]),

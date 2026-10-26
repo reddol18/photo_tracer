@@ -27,8 +27,12 @@ class Indexer(
         const val REST_MS = 120_000L
         const val TEMP_LIMIT = 42.0
         const val SLOW = 1.8
+        const val USER_STOP = "사용자가 멈춤"
         private val running = AtomicBoolean(false)
+        private val userStop = AtomicBoolean(false)
         fun isRunning() = running.get()
+        /** 멈춤 버튼: 도는 작업(밤·시험)을 다음 장 전에 끝낸다. 밤 일정은 남아 다음 충전 때 다시 깨어난다 */
+        fun requestStop() = userStop.set(true)
     }
 
     private val db = Db.get(ctx)
@@ -47,6 +51,7 @@ class Indexer(
     /** 반환: 멈춘 이유 */
     fun run(note: String): String {
         if (!running.compareAndSet(false, true)) return "이미 실행 중"
+        userStop.set(false)
         runId = db.writableDatabase.insert("runs", null, ContentValues().apply {
             put("mode", mode); put("start", now()); put("last", now()); put("note", note)
         })
@@ -85,9 +90,9 @@ class Indexer(
         val vision = if (jobs.any { it.vector }) models.session(Models.VISION) else null
         try {
             for ((i, job) in jobs.withIndex()) {
-                if (stopped()) return "시스템이 멈춤"
+                halt()?.let { return it }
                 rest()?.let { return it }
-                if (stopped()) return "시스템이 멈춤"
+                halt()?.let { return it }
                 process(models, detector, sface, vision, job)
                 progress(i + 1, jobs.size)
                 if ((i + 1) % 10 == 0) save(null)
@@ -166,11 +171,17 @@ class Indexer(
             if (why != "사용 중") rests++
             val until = System.currentTimeMillis() + (if (why == "사용 중") 30_000L else REST_MS)
             while (System.currentTimeMillis() < until) {
-                if (stopped()) return "시스템이 멈춤"
+                halt()?.let { return it }
                 Thread.sleep(5_000)
             }
             if (why == "속도 저하") vecMs.subList(maxOf(10, vecMs.size - 10), vecMs.size).clear() // 쉰 뒤 새로 잰다
         }
+    }
+
+    private fun halt(): String? = when {
+        userStop.get() -> USER_STOP
+        stopped() -> "시스템이 멈춤"
+        else -> null
     }
 
     /** 최근 10장 장면 벡터 시간 중앙값이 처음 10장의 SLOW배를 넘나 */

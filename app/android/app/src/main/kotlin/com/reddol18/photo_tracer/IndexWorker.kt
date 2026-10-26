@@ -47,7 +47,10 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             WorkManager.getInstance(ctx).enqueueUniqueWork("now", ExistingWorkPolicy.KEEP, req)
         }
 
-        fun stopNow(ctx: Context) = WorkManager.getInstance(ctx).cancelUniqueWork("now")
+        /** 도는 작업은 스스로 끝내게 하고(기록에 '사용자가 멈춤'), 아직 시작 전인 시험 작업은 취소한다 */
+        fun stopNow(ctx: Context) {
+            if (Indexer.isRunning()) Indexer.requestStop() else WorkManager.getInstance(ctx).cancelUniqueWork("now")
+        }
 
         /** 갤러리 스캔만. 앱 화면에서 돌리면 샤오미가 앱을 얼려(GreezeManager) 다른 앱으로 가면 멈춘다 — FGS로 올린다 */
         fun scanNow(ctx: Context) {
@@ -80,7 +83,7 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             Scanner(applicationContext).scan { done, total -> notify(done, total, "갤러리 읽는 중") }
             if (mode == "scan") return@withContext
             val stop = indexer.run(note)
-            if (isStopped && Build.VERSION.SDK_INT >= 31) indexer.stoppedBy("시스템이 멈춤: ${STOP[stopReason] ?: stopReason}")
+            if (isStopped && stop != Indexer.USER_STOP && Build.VERSION.SDK_INT >= 31) indexer.stoppedBy("시스템이 멈춤: ${STOP[stopReason] ?: stopReason}")
             Log.i("PhotoTracer", "밤 작업 끝($mode): $stop")
         }
         return Result.success()

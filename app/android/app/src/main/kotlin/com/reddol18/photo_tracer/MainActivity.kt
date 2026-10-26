@@ -68,6 +68,14 @@ class MainActivity : FlutterActivity() {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                     result.success(null)
                 }
+                "openAutostart" -> {
+                    // HyperOS(MIUI)는 앱 정보에 자동 시작이 없고 보안 앱의 목록에 있다. 없으면 앱 정보로
+                    val miui = Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")
+                    try { startActivity(miui) } catch (e: Exception) {
+                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                    }
+                    result.success(null)
+                }
                 "scan" -> {
                     if (photosGranted()) { IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     result.success(null)
