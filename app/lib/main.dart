@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -272,7 +273,7 @@ class _SearchPageState extends State<SearchPage> {
       final list = (r['items'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
       setState(() {
         items = list;
-        info = '후보 ${fmtInt(r['candidates'])}개 중 상위 ${list.length}개 · 검색어 처리 ${(r['query_ms'] as num).round()}ms'
+        info = '후보 ${fmtInt(r['candidates'])}개 중 신뢰도 높은 ${list.length}개 · 검색어 처리 ${(r['query_ms'] as num).round()}ms'
             ' · 전체 ${(r['total_ms'] as num).round()}ms';
       });
     } catch (e) {
@@ -309,6 +310,7 @@ class _SearchPageState extends State<SearchPage> {
               final it = items[i];
               final guessed = it['date_source'] == '이름';
               final label = it['date'] != null ? fmtDate(it['date'] as int) : (it['received'] != null ? '받은 날 ${fmtDate(it['received'] as int)}' : '날짜 모름');
+              final conf = ((it['conf'] as num) * 100).round();
               return GestureDetector(
                 onTap: () {
                   if (it['kind'] == 'segment') {
@@ -321,6 +323,15 @@ class _SearchPageState extends State<SearchPage> {
                 },
                 child: Stack(fit: StackFit.expand, children: [
                   Thumb(it['cover'] as int),
+                  // 신뢰도: 검색어와 맞는 사진일 확률(SigLIP). 결과는 높은 순
+                  Positioned(
+                    right: 0, top: 0,
+                    child: Container(
+                      color: conf >= 50 ? Colors.green.shade700 : (conf >= 10 ? Colors.orange.shade800 : Colors.black54),
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      child: Text('$conf%', style: const TextStyle(color: Colors.white, fontSize: 11)),
+                    ),
+                  ),
                   Positioned(
                     left: 0, right: 0, bottom: 0,
                     child: Container(
@@ -349,6 +360,7 @@ class PeoplePage extends StatefulWidget {
 
 class _PeoplePageState extends State<PeoplePage> {
   List<Map<String, dynamic>>? people;
+  final selected = <int>[]; // 길게 눌러 고른 인물(합치기). 처음 고른 인물로 합친다
 
   Future<void> load({bool recluster = false}) async {
     if (recluster) {
@@ -365,15 +377,36 @@ class _PeoplePageState extends State<PeoplePage> {
     load();
   }
 
+  Future<void> recluster() async {
+    final ok = await confirm(context, '처음부터 다시 묶을까요?', '손으로 뺀 사진과 합친 인물이 모두 처음 상태로 돌아갑니다.');
+    if (ok) load(recluster: true);
+  }
+
+  Future<void> merge() async {
+    final ok = await confirm(context, '인물 ${selected.length}명을 합칠까요?', '모두 인물 ${selected.first}(으)로 합칩니다.');
+    if (!ok) return;
+    await channel.invokeMethod('personMerge', {'ids': selected});
+    setState(selected.clear);
+    load();
+  }
+
+  void toggle(int id) => setState(() => selected.contains(id) ? selected.remove(id) : selected.add(id));
+
   @override
   Widget build(BuildContext context) {
     final p = people;
     return Column(children: [
-      ListTile(
-        title: Text('인물', style: Theme.of(context).textTheme.titleLarge),
-        subtitle: const Text('같은 사람으로 보이는 얼굴끼리 묶었습니다. 이름 붙이기는 다음 단계에서.'),
-        trailing: IconButton(icon: const Icon(Icons.refresh), tooltip: '다시 묶기', onPressed: () => load(recluster: true)),
-      ),
+      selected.isEmpty
+          ? ListTile(
+              title: Text('인물', style: Theme.of(context).textTheme.titleLarge),
+              subtitle: const Text('같은 사람으로 보이는 얼굴끼리 묶었습니다. 길게 눌러 여러 명을 고르면 합칠 수 있습니다.'),
+              trailing: IconButton(icon: const Icon(Icons.refresh), tooltip: '처음부터 다시 묶기', onPressed: recluster),
+            )
+          : ListTile(
+              leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(selected.clear)),
+              title: Text('${selected.length}명 고름'),
+              trailing: FilledButton(onPressed: selected.length >= 2 ? merge : null, child: const Text('합치기')),
+            ),
       Expanded(
         child: p == null
             ? const Center(child: CircularProgressIndicator())
@@ -383,16 +416,35 @@ class _PeoplePageState extends State<PeoplePage> {
                     padding: const EdgeInsets.all(16),
                     gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 0.8),
                     itemCount: p.length,
-                    itemBuilder: (context, i) => GestureDetector(
-                      onTap: () => Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => PhotosPage(title: '인물 ${p[i]['id']} · ${p[i]['n']}장',
-                              load: () => channel.invokeMethod('personPhotos', {'id': p[i]['id']})))),
-                      child: Column(children: [
-                        AspectRatio(aspectRatio: 1, child: ClipOval(child: Thumb(p[i]['face'] as int, face: true))),
-                        const SizedBox(height: 4),
-                        Text('${p[i]['n']}장', style: Theme.of(context).textTheme.bodySmall),
-                      ]),
-                    ),
+                    itemBuilder: (context, i) {
+                      final id = (p[i]['id'] as num).toInt();
+                      final on = selected.contains(id);
+                      return GestureDetector(
+                        onTap: () async {
+                          if (selected.isNotEmpty) return toggle(id);
+                          await Navigator.push(context, MaterialPageRoute(builder: (_) => PersonPage(id: id)));
+                          load(); // 빼낸 사진만큼 장 수가 바뀐다
+                        },
+                        onLongPress: () => toggle(id),
+                        child: Column(children: [
+                          AspectRatio(
+                            aspectRatio: 1,
+                            child: Stack(fit: StackFit.expand, children: [
+                              ClipOval(child: Thumb(p[i]['face'] as int, face: true)),
+                              if (on)
+                                Container(
+                                  decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.black38,
+                                      border: Border.all(color: Theme.of(context).colorScheme.primary, width: 3)),
+                                  child: Center(child: Text('${selected.indexOf(id) + 1}',
+                                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))),
+                                ),
+                            ]),
+                          ),
+                          const SizedBox(height: 4),
+                          Text('$id번 · ${p[i]['n']}장', style: Theme.of(context).textTheme.bodySmall),
+                        ]),
+                      );
+                    },
                   ),
       ),
     ]);
@@ -502,26 +554,220 @@ class _PhotosPageState extends State<PhotosPage> {
       );
 }
 
-void showPhoto(BuildContext context, int id) {
-  showDialog(
-    context: context,
-    builder: (_) => Dialog(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Thumb(id, size: 1024, fit: BoxFit.contain),
-        FutureBuilder(
+// ───────────────────────────── 인물 한 명의 사진 (신뢰도, 빼기)
+
+class PersonPage extends StatefulWidget {
+  const PersonPage({super.key, required this.id});
+  final int id;
+
+  @override
+  State<PersonPage> createState() => _PersonPageState();
+}
+
+class _PersonPageState extends State<PersonPage> {
+  List<Map<String, dynamic>>? photos; // id, face, sim
+  bool lowFirst = false; // 신뢰도 낮은 것부터 (잘못 묶인 사진 찾기)
+  final selected = <int>{};
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    final r = await channel.invokeMethod('personPhotos', {'id': widget.id});
+    if (mounted) setState(() => photos = (r as List).map((e) => Map<String, dynamic>.from(e)).toList());
+  }
+
+  List<Map<String, dynamic>> get sorted {
+    final list = [...photos!];
+    if (lowFirst) list.sort((a, b) => (a['sim'] as num).compareTo(b['sim'] as num));
+    return list;
+  }
+
+  Future<void> remove(List<int> ids) async {
+    await channel.invokeMethod('personRemove', {'id': widget.id, 'photos': ids});
+    setState(selected.clear);
+    await load();
+  }
+
+  void toggle(int id) => setState(() => selected.contains(id) ? selected.remove(id) : selected.add(id));
+
+  @override
+  Widget build(BuildContext context) {
+    final list = photos == null ? null : sorted;
+    return Scaffold(
+      appBar: selected.isEmpty
+          ? AppBar(
+              title: Text('인물 ${widget.id} · ${photos?.length ?? '…'}장'),
+              actions: [
+                TextButton.icon(
+                  onPressed: () => setState(() => lowFirst = !lowFirst),
+                  icon: const Icon(Icons.sort),
+                  label: Text(lowFirst ? '신뢰도 낮은 순' : '날짜순'),
+                ),
+              ],
+            )
+          : AppBar(
+              leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(selected.clear)),
+              title: Text('${selected.length}장 고름'),
+              actions: [
+                TextButton(onPressed: () => remove(selected.toList()), child: const Text('이 인물에서 빼기')),
+              ],
+            ),
+      body: list == null
+          ? const Center(child: CircularProgressIndicator())
+          : GridView.builder(
+              padding: const EdgeInsets.all(4),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 2, crossAxisSpacing: 2),
+              itemCount: list.length,
+              itemBuilder: (context, i) {
+                final it = list[i];
+                final id = it['id'] as int;
+                final sim = it['sim'] as num;
+                return GestureDetector(
+                  onTap: () async {
+                    if (selected.isNotEmpty) return toggle(id);
+                    final out = await showPhoto(context, id, person: widget.id, sim: sim.toDouble());
+                    if (out == true) remove([id]);
+                  },
+                  onLongPress: () => toggle(id),
+                  child: Stack(fit: StackFit.expand, children: [
+                    Thumb(id),
+                    Positioned(right: 0, top: 0, child: SimBadge(sim.toDouble())),
+                    if (selected.contains(id))
+                      Container(
+                        color: Colors.black45,
+                        child: const Icon(Icons.check_circle, color: Colors.white, size: 32),
+                      ),
+                  ]),
+                );
+              },
+            ),
+    );
+  }
+}
+
+/// 얼굴 신뢰도: 묶음 중심과 닮은 정도(코사인). 묶일 때 기준이 0.55라 그 아래는 빨강
+class SimBadge extends StatelessWidget {
+  const SimBadge(this.sim, {super.key});
+  final double sim;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        color: sim >= 0.65 ? Colors.green.shade700 : (sim >= 0.55 ? Colors.orange.shade800 : Colors.red.shade700),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        child: Text('${(sim * 100).round()}', style: const TextStyle(color: Colors.white, fontSize: 11)),
+      );
+}
+
+Future<bool> confirm(BuildContext context, String title, String body) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('확인')),
+        ],
+      ),
+    ) ??
+    false;
+
+/// 사진 크게 보기. person을 주면 그 인물로 묶인 얼굴은 초록 상자, 다른 얼굴은 얇은 흰 상자로 표시하고
+/// '이 인물에서 빼기' 버튼을 단다(누르면 true를 돌려준다).
+Future<bool?> showPhoto(BuildContext context, int id, {int? person, double? sim}) => showDialog<bool>(
+      context: context,
+      builder: (context) => Dialog(
+        clipBehavior: Clip.antiAlias, // 둥근 모서리 밖으로 사진이 튀어나오지 않게
+        child: FutureBuilder(
           future: channel.invokeMethod('photoInfo', {'id': id}),
           builder: (context, snap) {
             final m = snap.data == null ? null : Map<String, dynamic>.from(snap.data as Map);
-            if (m == null) return const SizedBox(height: 40);
-            final src = m['date_source'];
-            final taken = m['taken'] == null ? '찍은 날 모름' : '찍은 날 ${fmtDate(m['taken'] as int, time: true)}${src == '이름' ? ' (파일 이름으로 추정)' : ''}';
-            final got = m['received'] == null ? '' : ' · 받은 날 ${fmtDate(m['received'] as int)}';
-            return Padding(padding: const EdgeInsets.all(12), child: Text('$taken$got · $src'));
+            final faces = m == null ? <Map<String, dynamic>>[] : (m['faces'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
+            String info = '';
+            if (m != null) {
+              final src = m['date_source'];
+              final taken = m['taken'] == null ? '찍은 날 모름' : '찍은 날 ${fmtDate(m['taken'] as int, time: true)}${src == '이름' ? ' (파일 이름으로 추정)' : ''}';
+              final got = m['received'] == null ? '' : ' · 받은 날 ${fmtDate(m['received'] as int)}';
+              info = '$taken$got · 날짜 근거: $src';
+            }
+            return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Flexible(child: FacePhoto(id, faces: faces, person: person)),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                child: Text(m == null ? ' ' : info, style: Theme.of(context).textTheme.bodySmall),
+              ),
+              if (person != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: Row(children: [
+                    if (sim != null) ...[SimBadge(sim), const SizedBox(width: 6)],
+                    Expanded(child: Text(
+                        faces.where((f) => f['person'] == person).length > 1 ? '초록 상자 얼굴들을 이 인물로 묶음' : '초록 상자 얼굴을 이 인물로 묶음',
+                        style: Theme.of(context).textTheme.bodySmall)),
+                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('이 인물에서 빼기')),
+                  ]),
+                ),
+            ]);
           },
         ),
-      ]),
-    ),
-  );
+      ),
+    );
+
+/// 사진 위에 얼굴 상자. 얼굴 위치는 사진 대비 0~1이라, 디코드한 사진 비율대로 자리를 잡고 그 위에 그린다
+class FacePhoto extends StatelessWidget {
+  const FacePhoto(this.id, {super.key, this.faces = const [], this.person});
+  final int id;
+  final List<Map<String, dynamic>> faces;
+  final int? person;
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Uint8List?>(
+        future: Thumb.bytes(id, 1024),
+        builder: (context, snap) {
+          final data = snap.data;
+          if (data == null) return const SizedBox(height: 240, child: Center(child: CircularProgressIndicator()));
+          return FutureBuilder<ui.Image>(
+            future: decodeImageFromList(data),
+            builder: (context, img) {
+              if (img.data == null) return const SizedBox(height: 240);
+              return AspectRatio(
+                aspectRatio: img.data!.width / img.data!.height,
+                child: Stack(fit: StackFit.expand, children: [
+                  Image.memory(data, fit: BoxFit.fill, gaplessPlayback: true),
+                  if (person != null) CustomPaint(painter: _FaceBoxes(faces, person!, Theme.of(context).colorScheme.primary)),
+                ]),
+              );
+            },
+          );
+        },
+      );
+}
+
+class _FaceBoxes extends CustomPainter {
+  _FaceBoxes(this.faces, this.person, this.color);
+  final List<Map<String, dynamic>> faces;
+  final int person;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final f in faces) {
+      final mine = f['person'] == person;
+      final r = Rect.fromLTWH((f['x'] as num) * size.width, (f['y'] as num) * size.height,
+          (f['w'] as num) * size.width, (f['h'] as num) * size.height);
+      canvas.drawRect(r, Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = mine ? 3 : 1.5
+        ..color = mine ? Colors.greenAccent : Colors.white70);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_FaceBoxes old) => old.faces != faces || old.person != person;
 }
 
 /// 썸네일은 Kotlin이 MediaStore에서 만들어 JPEG로 준다. 최근 것만 메모리에 둔다.
@@ -534,7 +780,7 @@ class Thumb extends StatelessWidget {
 
   static final _cache = <String, Future<Uint8List?>>{};
 
-  Future<Uint8List?> _load() {
+  static Future<Uint8List?> bytes(int id, int size, {bool face = false}) {
     final key = '$face/$id/$size';
     final hit = _cache.remove(key);
     final f = hit ?? (face
@@ -547,7 +793,7 @@ class Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => FutureBuilder<Uint8List?>(
-        future: _load(),
+        future: bytes(id, size, face: face),
         builder: (context, snap) => snap.data == null
             ? Container(color: Colors.black12)
             : Image.memory(snap.data!, fit: fit, gaplessPlayback: true),

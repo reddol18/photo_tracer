@@ -11,11 +11,11 @@ import java.nio.ByteOrder
  *   photos   갤러리 사진. taken_at+date_source(찍은 날과 그 근거), received_at(받은 날, 대량 이동한 날은 비움)
  *            segment: 시간 구간 번호(찍은 날을 아는 사진만), is_rep: 구간 대표 사진
  *   vectors  SigLIP 사진 벡터(768). 대표 사진과 구간 밖 사진만
- *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 묶음 번호
+ *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 묶음 번호, manual: 사용자가 고친 얼굴(뺀 얼굴은 다시 안 붙임)
  *   segments 구간 시작·끝·장 수 (스캔할 때마다 다시 만든다)
  *   runs     밤 작업 기록 (언제, 몇 장, 장당 시간, 쉼, 온도, 왜 멈췄나)
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 1) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 2) {
     companion object {
         @Volatile private var instance: Db? = null
         fun get(ctx: Context): Db = instance ?: synchronized(this) {
@@ -46,7 +46,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             faces_done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0)""")
         db.execSQL("CREATE TABLE vectors (photo_id INTEGER PRIMARY KEY, v BLOB NOT NULL)")
         db.execSQL("""CREATE TABLE faces (id INTEGER PRIMARY KEY AUTOINCREMENT, photo_id INTEGER NOT NULL,
-            x REAL, y REAL, w REAL, h REAL, v BLOB NOT NULL, person INTEGER)""")
+            x REAL, y REAL, w REAL, h REAL, v BLOB NOT NULL, person INTEGER, manual INTEGER NOT NULL DEFAULT 0)""")
         db.execSQL("CREATE TABLE segments (id INTEGER PRIMARY KEY, start INTEGER, end INTEGER, n INTEGER)")
         db.execSQL("""CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT, start INTEGER, last INTEGER,
             end INTEGER, photos INTEGER DEFAULT 0, faces INTEGER DEFAULT 0, vectors INTEGER DEFAULT 0,
@@ -56,7 +56,9 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
         db.execSQL("CREATE INDEX photos_segment ON photos(segment)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
+        if (old < 2) db.execSQL("ALTER TABLE faces ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
+    }
 
     fun count(sql: String, vararg args: String): Int =
         readableDatabase.rawQuery(sql, args).use { if (it.moveToFirst()) it.getInt(0) else 0 }

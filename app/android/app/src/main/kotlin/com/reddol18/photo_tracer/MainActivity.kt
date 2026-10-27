@@ -88,18 +88,25 @@ class MainActivity : FlutterActivity() {
                     }
                     out
                 }
-                "personPhotos" -> bg {
-                    ids(db, """SELECT DISTINCT p.id FROM faces f JOIN photos p ON p.id = f.photo_id WHERE f.person = ?
-                               ORDER BY COALESCE(p.taken_at, p.received_at, 0) DESC""", call.argument<Number>("id").toString())
+                "personPhotos" -> bg { People(this).photos(call.argument<Number>("id")!!.toLong()) }
+                "personRemove" -> bg {
+                    People(this).remove(call.argument<Number>("id")!!.toLong(), call.argument<List<Number>>("photos")!!.map { it.toLong() })
                 }
-                "recluster" -> bg { People(this).cluster() }
+                "personMerge" -> bg { People(this).merge(call.argument<List<Number>>("ids")!!.map { it.toLong() }) }
+                "recluster" -> bg { People(this).full() }
                 "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
                 "faceThumb" -> bg(thumbs) { faceThumb(db, call.argument<Number>("id")!!.toLong()) }
                 "photoInfo" -> bg {
-                    db.readableDatabase.rawQuery("SELECT taken_at, date_source, received_at, name FROM photos WHERE id = ?",
-                        arrayOf(call.argument<Number>("id").toString())).use {
+                    val id = call.argument<Number>("id").toString()
+                    // 얼굴 위치(사진 대비 0~1)와 묶인 인물 — 사진 위에 상자로 그린다
+                    val faces = ArrayList<Map<String, Any?>>()
+                    db.readableDatabase.rawQuery("SELECT id, x, y, w, h, person FROM faces WHERE photo_id = ?", arrayOf(id)).use {
+                        while (it.moveToNext()) faces.add(mapOf("id" to it.getLong(0), "x" to it.getDouble(1), "y" to it.getDouble(2),
+                            "w" to it.getDouble(3), "h" to it.getDouble(4), "person" to (if (it.isNull(5)) null else it.getLong(5))))
+                    }
+                    db.readableDatabase.rawQuery("SELECT taken_at, date_source, received_at, name FROM photos WHERE id = ?", arrayOf(id)).use {
                         if (!it.moveToFirst()) null else mapOf("taken" to (if (it.isNull(0)) null else it.getLong(0)),
-                            "date_source" to it.getString(1), "received" to (if (it.isNull(2)) null else it.getLong(2)))
+                            "date_source" to it.getString(1), "received" to (if (it.isNull(2)) null else it.getLong(2)), "faces" to faces)
                     }
                 }
                 "runs" -> bg {
