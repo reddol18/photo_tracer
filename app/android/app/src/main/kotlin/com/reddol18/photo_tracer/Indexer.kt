@@ -62,7 +62,7 @@ class Indexer(
         var stop = "오류"
         try {
             stop = loop()
-            if (stop == "완료") People(ctx).cluster()
+            if (stop == "완료") { People(ctx).cluster(); Who(ctx).assignAll() }
         } catch (e: Throwable) {
             Log.e("PhotoTracer", "밤 작업 오류", e)
             stop = "오류: ${e.javaClass.simpleName} ${e.message?.take(80)}"

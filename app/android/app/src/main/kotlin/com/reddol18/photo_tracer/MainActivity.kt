@@ -43,7 +43,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app").setMethodCallHandler { call, result ->
             fun bg(pool: java.util.concurrent.ExecutorService = worker, block: () -> Any?) = pool.execute {
                 try {
-                    val v = block()
+                    val v = block().takeUnless { it is Unit } // 돌려줄 값이 없는 일(Unit)은 채널이 못 실어 나른다
                     main.post { result.success(v) }
                 } catch (e: Throwable) {
                     Log.e("PhotoTracer", "${call.method} 실패", e)
@@ -89,20 +89,28 @@ class MainActivity : FlutterActivity() {
                     out
                 }
                 "personPhotos" -> bg { People(this).photos(call.argument<Number>("id")!!.toLong()) }
-                "personRemove" -> bg {
-                    People(this).remove(call.argument<Number>("id")!!.toLong(), call.argument<List<Number>>("photos")!!.map { it.toLong() })
-                }
-                "personMerge" -> bg { People(this).merge(call.argument<List<Number>>("ids")!!.map { it.toLong() }) }
                 "recluster" -> bg { People(this).full() }
+                // 등록한 인물
+                "people" -> bg { Who(this).people() }
+                "whoPhotos" -> bg { Who(this).photos(call.argument<Number>("id")!!.toLong()) }
+                "whoCreate" -> bg { Who(this).create(call.argument<String>("name")!!, longs(call.argument("faces"))) }
+                "whoRename" -> bg { Who(this).rename(call.argument<Number>("id")!!.toLong(), call.argument<String>("name")!!) }
+                "whoDelete" -> bg { Who(this).delete(call.argument<Number>("id")!!.toLong()) }
+                "whoMark" -> bg { Who(this).mark(call.argument<Number>("id")!!.toLong(), longs(call.argument("faces")), call.argument<Boolean>("ok") == true) }
+                "whoConfirm" -> bg { Who(this).confirmPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }
+                "whoReject" -> bg { Who(this).rejectPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }
+                "whoMerge" -> bg { Who(this).merge(longs(call.argument("ids"))) }
                 "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
                 "faceThumb" -> bg(thumbs) { faceThumb(db, call.argument<Number>("id")!!.toLong()) }
                 "photoInfo" -> bg {
                     val id = call.argument<Number>("id").toString()
                     // 얼굴 위치(사진 대비 0~1)와 묶인 인물 — 사진 위에 상자로 그린다
                     val faces = ArrayList<Map<String, Any?>>()
-                    db.readableDatabase.rawQuery("SELECT id, x, y, w, h, person FROM faces WHERE photo_id = ?", arrayOf(id)).use {
+                    db.readableDatabase.rawQuery("SELECT id, x, y, w, h, person, who, maybe, who_sim FROM faces WHERE photo_id = ?", arrayOf(id)).use {
+                        val n = { i: Int -> if (it.isNull(i)) null else it.getLong(i) }
                         while (it.moveToNext()) faces.add(mapOf("id" to it.getLong(0), "x" to it.getDouble(1), "y" to it.getDouble(2),
-                            "w" to it.getDouble(3), "h" to it.getDouble(4), "person" to (if (it.isNull(5)) null else it.getLong(5))))
+                            "w" to it.getDouble(3), "h" to it.getDouble(4), "person" to n(5), "who" to n(6), "maybe" to n(7),
+                            "sim" to (if (it.isNull(8)) null else it.getDouble(8))))
                     }
                     db.readableDatabase.rawQuery("SELECT taken_at, date_source, received_at, name FROM photos WHERE id = ?", arrayOf(id)).use {
                         if (!it.moveToFirst()) null else mapOf("taken" to (if (it.isNull(0)) null else it.getLong(0)),
@@ -186,6 +194,8 @@ class MainActivity : FlutterActivity() {
         db.readableDatabase.rawQuery(sql, arrayOf(arg)).use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
 
     /** 묶음의 표지 얼굴: 가장 큰 얼굴 */
+    private fun longs(v: List<Number>?): List<Long> = v?.map { it.toLong() } ?: emptyList()
+
     private fun cover(db: Db, person: Long): Long =
         db.readableDatabase.rawQuery("SELECT id FROM faces WHERE person = ? ORDER BY w * h DESC LIMIT 1", arrayOf(person.toString()))
             .use { if (it.moveToFirst()) it.getLong(0) else 0L }

@@ -9,8 +9,8 @@ import android.util.Log
  * 얼굴마다 가장 가까운 묶음 중심과의 거리가 0.45 안이면 넣고 중심을 고치고, 아니면 새 묶음.
  * 3장 미만 묶음은 화면에 보이지 않는다.
  *
- * 사용자가 손으로 고친 것(빼기·합치기)은 지켜야 하므로, 묶음이 한 번 생긴 뒤에는 새 얼굴만 기존 묶음에 붙인다(assign).
- * 빼낸 얼굴은 manual = 1, person = NULL 로 두어 다시 붙지 않게 한다. 처음부터 다시 묶기(full)는 손으로 고친 것을 지운다.
+ * 아이들끼리 섞여 묶음 중심이 흐려지므로 이 묶음은 '정답 얼굴'을 고를 때 참고로만 쓴다. 인물 찾기는 Who.kt.
+ * 묶음 번호가 자꾸 바뀌지 않게, 한 번 생긴 뒤에는 새 얼굴만 기존 묶음에 붙인다(assign). full은 처음부터 다시.
  */
 class People(ctx: Context) {
     companion object {
@@ -56,28 +56,6 @@ class People(ctx: Context) {
         }
         write(ids, out, resetManual = false)
         Log.i("PhotoTracer", "새 얼굴 ${vecs.size}개 붙임, ${System.currentTimeMillis() - t0}ms")
-    }
-
-    /** 인물에서 사진 빼기: 그 사진들에 있는 이 인물의 얼굴을 묶음에서 빼고 다시 붙지 않게 한다 */
-    fun remove(person: Long, photos: List<Long>) {
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
-            for (p in photos) w.execSQL("UPDATE faces SET person = NULL, manual = 1 WHERE person = ? AND photo_id = ?", arrayOf<Any>(person, p))
-            w.setTransactionSuccessful()
-        } finally { w.endTransaction() }
-    }
-
-    /** 합치기: 모두 첫 번째 인물로 */
-    fun merge(persons: List<Long>) {
-        if (persons.size < 2) return
-        val into = persons[0]
-        val w = db.writableDatabase
-        w.beginTransaction()
-        try {
-            for (p in persons.drop(1)) w.execSQL("UPDATE faces SET person = ?, manual = 1 WHERE person = ?", arrayOf<Any>(into, p))
-            w.setTransactionSuccessful()
-        } finally { w.endTransaction() }
     }
 
     /**

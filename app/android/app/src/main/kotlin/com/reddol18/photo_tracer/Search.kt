@@ -14,7 +14,10 @@ import java.nio.ByteOrder
  * 자연어 검색. 검색어 → 토크나이저 → 텍스트 모델 → 768차원 벡터, 사진 벡터와 코사인으로 순위를 매긴다.
  * 구간은 그 안에서 가장 닮은 사진의 점수로 겨루고(표지도 그 사진), 구간 밖 사진(찍은 날 모름·화면 캡처)은 한 장씩 겨룬다.
  *   예전에는 구간을 장면 벡터 평균(0단계 '대표 평균')으로 겨뤘는데, 평균은 점수가 낮아져 낱장 사진과 섞이면 순서가 어긋났다.
- * 신뢰도: SigLIP이 배운 대로 sigmoid(scale·cos + bias) — '검색어와 맞는 사진일 확률'. 0단계 사진으로 보면 1위 중앙값 0.81, 60위 0.02.
+ * 흔한 검색어 방향 빼기: 앨범 대부분이 아이 사진이라 "바다에서 노는 아이"는 '바다'보다 '아이'에 끌린다.
+ *   일상 문구 30개 평균(assets/search/common.bin, poc/app_assets.py common)을 검색어 벡터에서 빼고 순위를 매긴다.
+ *   0단계 정답(search_rank_eval.py): '아이와 ○○' 상위10 정밀도 28→42%, 한두 낱말 검색어는 그대로(37~38%).
+ * conf: SigLIP 확률 sigmoid(scale·cos + bias). 긴 설명 문장은 1위가 0.8쯤이지만 짧은 검색어는 0.3쯤이라 화면에는 숫자로 안 보인다.
  * 텍스트 모델(약 200MB)은 처음 검색할 때 열어 앱이 살아 있는 동안 둔다.
  */
 class Search(private val ctx: Context) {
@@ -27,7 +30,13 @@ class Search(private val ctx: Context) {
         private var text: OrtSession? = null
         private var bank: Bank? = null
         private var bankKey = -1
+        private var common: FloatArray? = null
     }
+
+    private fun common(): FloatArray = common ?: ctx.assets.open("search/common.bin").use { s ->
+        val b = ByteBuffer.wrap(s.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
+        FloatArray(b.remaining() / 4) { b.getFloat() }
+    }.also { common = it }
 
     /** segs[i]: 사진 i의 구간(구간 밖이면 null) */
     private class Bank(val photos: List<Long>, val segs: List<Long?>, val vecs: List<FloatArray>)
@@ -42,20 +51,24 @@ class Search(private val ctx: Context) {
         return models.embedText(s, t.encode(query))
     }
 
-    /** 결과: kind(segment|photo), id, cover(보여 줄 사진), n(장 수), date, date_source, score(코사인), conf(0~1), 신뢰도 높은 순 */
+    /** 결과: kind(segment|photo), id, cover(보여 줄 사진), n(장 수), date, date_source, score(코사인), conf(0~1). 흔한 방향을 뺀 점수 높은 순 */
     fun search(query: String): Map<String, Any?> {
         val t0 = System.nanoTime()
         val q = vector(query)
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
-        val scores = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * q[d]; s }
+        val c = common()
+        var qc = 0f; for (d in q.indices) qc += q[d] * c[d]
+        val qd = FloatArray(q.size) { q[it] - qc * c[it] }
+        val raw = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * q[d]; s }
+        val scores = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * qd[d]; s } // 순위용(크기 무관)
         // 점수 높은 사진부터 훑으며, 구간은 처음 나온(= 가장 닮은) 사진으로 한 번만 넣는다
         val seen = HashSet<Long>()
         val items = ArrayList<Map<String, Any?>>()
         for (i in scores.indices.sortedByDescending { scores[it] }) {
             val seg = b.segs[i]
             if (seg != null && !seen.add(seg)) continue
-            items.add(if (seg != null) segmentItem(seg, b.photos[i], scores[i]) else photoItem(b.photos[i], scores[i]))
+            items.add(if (seg != null) segmentItem(seg, b.photos[i], raw[i]) else photoItem(b.photos[i], raw[i]))
             if (items.size == TOP) break
         }
         return mapOf("items" to items, "query_ms" to tq, "total_ms" to (System.nanoTime() - t0) / 1e6,

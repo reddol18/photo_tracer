@@ -105,7 +105,7 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             // 다 끝난 뒤에도 충전 중이면 15분마다 깨어난다 — 새 사진이 없으면 기록을 남기지 않고 끝낸다.
             // 지워진 사진만 있으면 얼굴이 빠졌으니 인물만 다시 묶는다
             if (mode == "night" && !indexer.hasWork()) {
-                if (changed > 0) People(applicationContext).cluster()
+                if (changed > 0) { People(applicationContext).cluster(); Who(applicationContext).assignAll() }
                 Log.i("PhotoTracer", "밤 작업: 할 일 없음 (바뀐 사진 $changed)")
                 return@withContext
             }

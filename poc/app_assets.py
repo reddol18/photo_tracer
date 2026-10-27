@@ -9,6 +9,9 @@
       app/android/app/src/test/resources 에(저장소 포함), 가족 사진 설명 문장은 eval_data/app 에(저장소 제외).
     - 폰 확인용 검색어 목록: 공개분은 assets/debug/queries.txt, 설명 문장은 eval_data/app/queries_private.txt
       (adb로 앱 폴더에 넣는다 — APK에는 넣지 않는다).
+    - 흔한 검색어 방향: assets/search/common.bin (아래 common)
+  uv run app_assets.py common
+    - 흔한 검색어 방향만 다시 만든다.
   uv run app_assets.py compare <query_vectors_*.json>
     - 폰이 쓴 토큰 id와 벡터를 PC(Python 토크나이저 + text_w8.onnx)와 비교한다.
 """
@@ -110,6 +113,19 @@ def build() -> None:
         write_queries(priv, PRIVATE / "queries_private.txt")
 
 
+def write_common() -> None:
+    """흔한 검색어 방향(search_rank_eval.GENERIC 평균, 768 float32 LE) → assets/search/common.bin.
+    앱은 검색어 벡터에서 이 방향을 빼고 순위를 매긴다('아이와 ○○' 상위10 정밀도 28→42%)."""
+    from search_rank_eval import GENERIC
+    from short_query_eval import text_vectors
+    v = text_vectors(GENERIC).mean(0)
+    v = (v / np.linalg.norm(v)).astype("<f4")
+    out = ASSETS / "search" / "common.bin"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(v.tobytes())
+    print(f"흔한 검색어 방향 ({len(GENERIC)}개 평균) → {out}")
+
+
 def compare(path: Path) -> None:
     r = json.loads(path.read_text(encoding="utf-8"))
     texts = [bytes.fromhex(h).decode("utf-8") for h in r["queries"]]
@@ -132,6 +148,9 @@ def compare(path: Path) -> None:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["build"]:
         build()
+        write_common()
+    elif sys.argv[1:2] == ["common"]:
+        write_common()
     elif sys.argv[1:2] == ["compare"]:
         compare(Path(sys.argv[2]))
     else:
