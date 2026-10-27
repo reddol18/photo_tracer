@@ -80,8 +80,15 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
         }
         // 멈추라는 신호가 오면 코루틴이 취소되어 이 블록 뒤는 돌지 않는다 — 멈춘 이유는 블록 안에서 남긴다
         withContext(Dispatchers.IO) {
-            Scanner(applicationContext).scan { done, total -> notify(done, total, "갤러리 읽는 중") }
+            val changed = Scanner(applicationContext).scan { done, total -> notify(done, total, "갤러리 읽는 중") }
             if (mode == "scan") return@withContext
+            // 다 끝난 뒤에도 충전 중이면 15분마다 깨어난다 — 새 사진이 없으면 기록을 남기지 않고 끝낸다.
+            // 지워진 사진만 있으면 얼굴이 빠졌으니 인물만 다시 묶는다
+            if (mode == "night" && !indexer.hasWork()) {
+                if (changed > 0) People(applicationContext).cluster()
+                Log.i("PhotoTracer", "밤 작업: 할 일 없음 (바뀐 사진 $changed)")
+                return@withContext
+            }
             val stop = indexer.run(note)
             if (isStopped && stop != Indexer.USER_STOP && Build.VERSION.SDK_INT >= 31) indexer.stoppedBy("시스템이 멈춤: ${STOP[stopReason] ?: stopReason}")
             Log.i("PhotoTracer", "밤 작업 끝($mode): $stop")

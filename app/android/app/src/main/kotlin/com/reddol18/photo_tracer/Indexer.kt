@@ -74,7 +74,10 @@ class Indexer(
         if (runId > 0) db.writableDatabase.execSQL("UPDATE runs SET stop = ? WHERE id = ?", arrayOf<Any>(reason, runId))
     }
 
-    private fun loop(): String {
+    /** 아직 얼굴이나 장면 벡터를 안 만든 사진이 있나 */
+    fun hasWork(): Boolean = pending().isNotEmpty()
+
+    private fun pending(): List<Job> {
         val jobs = ArrayList<Job>()
         db.readableDatabase.rawQuery("""
             SELECT p.id, p.faces_done = 0, ${Db.NEEDS_VECTOR} AND v.photo_id IS NULL
@@ -83,6 +86,11 @@ class Indexer(
             ORDER BY p.segment IS NULL, COALESCE(p.taken_at, p.received_at, 0) DESC""", null).use {
             while (it.moveToNext()) jobs.add(Job(it.getLong(0), it.getInt(1) == 1, it.getInt(2) == 1))
         }
+        return jobs
+    }
+
+    private fun loop(): String {
+        val jobs = pending()
         if (jobs.isEmpty()) return "완료"
         val models = Models(ctx)
         val detector = models.detector()

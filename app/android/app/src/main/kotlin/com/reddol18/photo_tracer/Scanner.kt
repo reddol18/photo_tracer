@@ -70,7 +70,7 @@ class Scanner(private val ctx: Context) {
 
     private val db = Db.get(ctx)
 
-    /** 반환: 새로 넣은 장 수. onProgress(읽은 장, 전체)는 100장마다 */
+    /** 반환: 바뀐 장 수(새로 넣은 장 + 갤러리에서 지워진 장). onProgress(읽은 장, 전체)는 100장마다 */
     fun scan(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int = synchronized(lock) {
         try { phase = "읽기"; done = 0; total = 0; scanLocked(onProgress) } finally { phase = null }
     }
@@ -140,7 +140,7 @@ class Scanner(private val ctx: Context) {
             segment()
         }
         Log.i("PhotoTracer", "스캔 끝: 새 사진 $added, 지운 사진 ${gone.size}, ${System.currentTimeMillis() - t0}ms")
-        return added
+        return added + gone.size
     }
 
     private fun readExif(id: Long, v: ContentValues) {
