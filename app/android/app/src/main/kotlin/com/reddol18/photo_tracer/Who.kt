@@ -17,6 +17,7 @@ class Who(ctx: Context) {
         const val THRESHOLD = 0.45f
         const val MARGIN = 0.10f
         const val MAYBE = 0.35f
+        const val NOBODY = -1L // face_marks.person: '아무도 아님'으로 뺀 얼굴
     }
 
     private val db = Db.get(ctx)
@@ -57,7 +58,11 @@ class Who(ctx: Context) {
         assignAll()
     }
 
-    /** ok=true: 정답 얼굴로, false: 이 사람 아님. 같은 얼굴의 예전 표시는 덮어쓴다 */
+    /**
+     * ok=true: 정답 얼굴로, false: 이 사람 아님. 같은 얼굴의 예전 표시는 덮어쓴다.
+     * '아님'은 그 얼굴을 아무에게도 붙이지 않는다(NOBODY 표시) — 그러지 않으면 2등 인물(예: 딸 친구)로 넘어가 버린다.
+     * 이 인물의 반례로도 남겨 비슷한 다른 얼굴을 덜 붙이게 한다. 나중에 누군가의 정답으로 고르면 NOBODY는 풀린다.
+     */
     fun mark(person: Long, faces: List<Long>, ok: Boolean) {
         val w = db.writableDatabase
         w.beginTransaction()
@@ -65,7 +70,8 @@ class Who(ctx: Context) {
             for (f in faces) {
                 w.execSQL("INSERT OR REPLACE INTO face_marks(face_id, person, ok) VALUES (?, ?, ?)", arrayOf<Any>(f, person, if (ok) 1 else 0))
                 // 한 얼굴은 한 사람의 정답만 될 수 있다
-                if (ok) w.execSQL("DELETE FROM face_marks WHERE face_id = ? AND person != ? AND ok = 1", arrayOf<Any>(f, person))
+                if (ok) w.execSQL("DELETE FROM face_marks WHERE face_id = ? AND (person = ? OR (person != ? AND ok = 1))", arrayOf<Any>(f, NOBODY, person))
+                else w.execSQL("INSERT OR REPLACE INTO face_marks(face_id, person, ok) VALUES (?, ?, 0)", arrayOf<Any>(f, NOBODY))
             }
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
@@ -159,6 +165,7 @@ class Who(ctx: Context) {
                     w.execSQL("UPDATE faces SET who = ?, who_sim = 1 WHERE id = ?", arrayOf<Any>(ref, id))
                     continue
                 }
+                if (m?.containsKey(NOBODY) == true) continue // 사용자가 '아님'으로 뺀 얼굴
                 // 인물마다 정답 얼굴과의 최대 유사도. 반례로 표시한 인물은 뺀다
                 val sims = people.filter { p -> m?.get(p) != false }.map { p -> p to pos[p]!!.maxOf { r -> dot(v, r) } }
                     .sortedByDescending { it.second }

@@ -14,11 +14,11 @@ import java.nio.ByteOrder
  *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 자동 묶음 번호(고를 때 참고), manual: 묶음에서 뺀 얼굴
  *            who/who_sim: 등록한 인물로 찾음(정답 얼굴과 최대 유사도), maybe: 확인이 필요한 인물
  *   people     등록한 인물: 이름(또는 호칭), 관계, 생년(사진 속 나이 계산). 폰 밖으로 나가지 않는다
- *   face_marks 사용자 표시: 얼굴이 그 인물의 정답(ok=1)인지 아닌지(ok=0)
+ *   face_marks 사용자 표시: 얼굴이 그 인물의 정답(ok=1)인지 아닌지(ok=0). person=-1(Who.NOBODY): 아무에게도 붙이지 않음
  *   segments 구간 시작·끝·장 수 (스캔할 때마다 다시 만든다)
  *   runs     밤 작업 기록 (언제, 몇 장, 장당 시간, 쉼, 온도, 왜 멈췄나)
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 4) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 5) {
     companion object {
         @Volatile private var instance: Db? = null
         fun get(ctx: Context): Db = instance ?: synchronized(this) {
@@ -66,6 +66,14 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
         if (old == 3) {
             db.execSQL("ALTER TABLE people ADD COLUMN relation TEXT")
             db.execSQL("ALTER TABLE people ADD COLUMN birth_year INTEGER")
+        }
+        if (old in 3..4) {
+            // 예전 '아님' 표시도 '아무도 아님'으로 (Who.NOBODY): 2등 인물로 넘어가 붙어 있던 것을 뗀다
+            db.execSQL("""INSERT OR IGNORE INTO face_marks(face_id, person, ok)
+                SELECT DISTINCT face_id, ${Who.NOBODY}, 0 FROM face_marks
+                WHERE ok = 0 AND face_id NOT IN (SELECT face_id FROM face_marks WHERE ok = 1)""")
+            db.execSQL("""UPDATE faces SET who = NULL, who_sim = NULL, maybe = NULL
+                WHERE id IN (SELECT face_id FROM face_marks WHERE person = ${Who.NOBODY})""")
         }
     }
 
