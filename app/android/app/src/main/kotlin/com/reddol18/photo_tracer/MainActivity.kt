@@ -70,9 +70,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "openVendorSettings" -> { openVendorSettings(); result.success(null) }
                 "scan" -> {
-                    if (photosGranted()) { IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
+                    if (photosGranted()) { if (IndexWorker.nightOn(this)) IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     result.success(null)
                 }
+                "setNight" -> { IndexWorker.setNight(this, call.argument<Boolean>("on") == true); result.success(null) }
                 "startNow" -> { IndexWorker.startNow(this); result.success(null) }
                 "stopNow" -> { IndexWorker.stopNow(this); result.success(null) }
                 "search" -> bg { Search(this).search(call.argument<String>("q") ?: "") }
@@ -136,6 +137,7 @@ class MainActivity : FlutterActivity() {
             "battery_exempt" to pm.isIgnoringBatteryOptimizations(packageName),
             "manufacturer" to Build.MANUFACTURER,
             "running" to Indexer.isRunning(),
+            "night_on" to IndexWorker.nightOn(this),
             "scan_phase" to Scanner.phase,
             "scan_done" to Scanner.done,
             "scan_total" to Scanner.total,

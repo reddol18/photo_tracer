@@ -186,17 +186,33 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
             ),
           ),
         const SizedBox(height: 16),
+        // 꺼 두면 시스템 자동 시작이 켜져 있어도 밤 작업이 깨어나지 않는다. 지금 시작은 그대로 쓸 수 있다
+        SwitchListTile(
+          title: const Text('밤에 자동 정리'),
+          subtitle: const Text('충전 중이고 화면이 꺼져 있을 때 새 사진을 정리합니다'),
+          value: st['night_on'] == true,
+          onChanged: (on) async {
+            await channel.invokeMethod('setNight', {'on': on});
+            refresh();
+          },
+        ),
         Card(
           color: Theme.of(context).colorScheme.primaryContainer,
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(st['running'] == true ? '지금 정리하고 있습니다' : (total > 0 && done >= total ? '정리가 끝났습니다' : '오늘 밤 충전기에 꽂아 두세요'),
+              Text(st['running'] == true
+                      ? '지금 정리하고 있습니다'
+                      : total > 0 && done >= total
+                          ? '정리가 끝났습니다'
+                          : st['night_on'] == true ? '오늘 밤 충전기에 꽂아 두세요' : '밤 정리가 꺼져 있습니다',
                   style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Text(st['scan_phase'] != null
                   ? scanText(st)
-                  : '충전 중이고 화면이 꺼져 있을 때 조금씩 정리합니다. 처음에는 며칠 밤 걸릴 수 있습니다.'),
+                  : st['night_on'] == true
+                      ? '충전 중이고 화면이 꺼져 있을 때 조금씩 정리합니다. 처음에는 며칠 밤 걸릴 수 있습니다.'
+                      : '위 스위치를 켜거나 "지금 시작"을 누르면 정리합니다.'),
               const SizedBox(height: 12),
               LinearProgressIndicator(
                   value: st['scan_phase'] != null

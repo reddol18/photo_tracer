@@ -31,6 +31,9 @@ class Indexer(
         private val running = AtomicBoolean(false)
         private val userStop = AtomicBoolean(false)
         fun isRunning() = running.get()
+        /** 도는 작업의 mode (안 돌면 null) */
+        @Volatile var runningMode: String? = null
+            private set
         /** 멈춤 버튼: 도는 작업(밤·시험)을 다음 장 전에 끝낸다. 밤 일정은 남아 다음 충전 때 다시 깨어난다 */
         fun requestStop() = userStop.set(true)
     }
@@ -52,6 +55,7 @@ class Indexer(
     fun run(note: String): String {
         if (!running.compareAndSet(false, true)) return "이미 실행 중"
         userStop.set(false)
+        runningMode = mode
         runId = db.writableDatabase.insert("runs", null, ContentValues().apply {
             put("mode", mode); put("start", now()); put("last", now()); put("note", note)
         })
@@ -64,6 +68,7 @@ class Indexer(
             stop = "오류: ${e.javaClass.simpleName} ${e.message?.take(80)}"
         } finally {
             save(stop)
+            runningMode = null
             running.set(false)
         }
         return stop

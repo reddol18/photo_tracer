@@ -41,6 +41,22 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             WorkManager.getInstance(ctx).enqueueUniquePeriodicWork("night", ExistingPeriodicWorkPolicy.KEEP, req)
         }
 
+        private fun prefs(ctx: Context) = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+        /** 밤에 자동 정리 스위치. 처음에는 켜져 있다 */
+        fun nightOn(ctx: Context) = prefs(ctx).getBoolean("night", true)
+
+        /** 끄면 일정을 지우고 도는 밤 작업도 멈춘다(시험 작업은 그대로). 시스템 자동 시작이 앱을 깨워도 doWork에서 바로 끝난다 */
+        fun setNight(ctx: Context, on: Boolean) {
+            prefs(ctx).edit().putBoolean("night", on).apply()
+            if (on) {
+                scheduleNight(ctx)
+            } else {
+                if (Indexer.runningMode == "night") Indexer.requestStop()
+                WorkManager.getInstance(ctx).cancelUniqueWork("night")
+            }
+        }
+
         /** 시험용: 충전·화면 조건 없이 지금 돌린다 */
         fun startNow(ctx: Context) {
             val req = OneTimeWorkRequestBuilder<IndexWorker>().setInputData(workDataOf("mode" to "now")).build()
@@ -68,6 +84,10 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
     private val mode = inputData.getString("mode") ?: "night"
 
     override suspend fun doWork(): Result {
+        if (mode == "night" && !nightOn(applicationContext)) {
+            Log.i("PhotoTracer", "밤 작업: 스위치가 꺼져 있음")
+            return Result.success()
+        }
         val note = try {
             setForeground(foregroundInfo(0, 0))
             "FGS ${if (Build.VERSION.SDK_INT >= 35) "mediaProcessing" else "dataSync"}"
