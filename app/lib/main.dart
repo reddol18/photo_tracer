@@ -988,8 +988,24 @@ class _PhotoViewState extends State<_PhotoView> {
       ),
       if (faces.isNotEmpty)
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
           child: Text('얼굴을 누르면 정답으로 지정하거나 "아님"으로 뺄 수 있습니다.', style: Theme.of(context).textTheme.bodySmall),
+        ),
+      // 추측으로 붙은 이름(정답 아닌 것)이 모두 틀렸을 때 한 번에 빼기
+      if (faces.any((f) => (f['who'] ?? f['maybe']) != null && f['sim'] != 1.0))
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+            child: TextButton.icon(
+              icon: const Icon(Icons.block, size: 18),
+              label: const Text('추측한 이름 모두 아님'),
+              onPressed: () async {
+                await channel.invokeMethod('whoRejectAll', {'photo': widget.id});
+                load();
+              },
+            ),
+          ),
         ),
     ]);
   }

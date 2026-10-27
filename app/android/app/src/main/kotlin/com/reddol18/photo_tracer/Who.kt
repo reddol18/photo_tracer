@@ -11,6 +11,7 @@ import android.util.Log
  *   자동 묶음(People)은 아이들끼리 섞여 중심이 흐려지므로 고를 때 참고로만 쓴다.
  * '이 사람 아님'으로 표시한 얼굴은 그 인물의 반례가 되어, 반례와 더 닮은 얼굴은 그 인물로 붙이지 않는다(차이 기준도 같이 본다).
  * 기준에 못 미치지만 가까운 얼굴(0.35 이상, 또는 차이가 모자람)은 maybe로 두어 사용자가 확인하게 한다.
+ * 한 사진에서 한 인물은 얼굴 하나에만 붙인다(찾음 > 확인 필요 > 유사도 순). 화면 캡처 속 얼굴은 추측하지 않는다.
  */
 class Who(ctx: Context) {
     companion object {
@@ -18,6 +19,7 @@ class Who(ctx: Context) {
         const val MARGIN = 0.10f
         const val MAYBE = 0.35f
         const val NOBODY = -1L // face_marks.person: '아무도 아님'으로 뺀 얼굴
+        const val RULE = 2 // 붙이는 규칙이 바뀌면 올린다 → 앱을 열 때 한 번 다시 붙인다 (2: 사진당 한 얼굴, 캡처 제외)
     }
 
     private val db = Db.get(ctx)
@@ -67,12 +69,31 @@ class Who(ctx: Context) {
         val w = db.writableDatabase
         w.beginTransaction()
         try {
-            for (f in faces) {
-                w.execSQL("INSERT OR REPLACE INTO face_marks(face_id, person, ok) VALUES (?, ?, ?)", arrayOf<Any>(f, person, if (ok) 1 else 0))
-                // 한 얼굴은 한 사람의 정답만 될 수 있다
-                if (ok) w.execSQL("DELETE FROM face_marks WHERE face_id = ? AND (person = ? OR (person != ? AND ok = 1))", arrayOf<Any>(f, NOBODY, person))
-                else w.execSQL("INSERT OR REPLACE INTO face_marks(face_id, person, ok) VALUES (?, ?, 0)", arrayOf<Any>(f, NOBODY))
-            }
+            for (f in faces) put(f, person, ok)
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+        assignAll()
+    }
+
+    private fun put(face: Long, person: Long, ok: Boolean) {
+        val w = db.writableDatabase
+        w.execSQL("INSERT OR REPLACE INTO face_marks(face_id, person, ok) VALUES (?, ?, ?)", arrayOf<Any>(face, person, if (ok) 1 else 0))
+        // 한 얼굴은 한 사람의 정답만 될 수 있다
+        if (ok) w.execSQL("DELETE FROM face_marks WHERE face_id = ? AND (person = ? OR (person != ? AND ok = 1))", arrayOf<Any>(face, NOBODY, person))
+        else w.execSQL("INSERT OR REPLACE INTO face_marks(face_id, person, ok) VALUES (?, ?, 0)", arrayOf<Any>(face, NOBODY))
+    }
+
+    /** 사진 한 장에서 추측으로 붙은 이름(찾음·확인 필요)을 모두 '아님'으로. 정답 얼굴은 그대로 둔다 */
+    fun rejectAll(photo: Long) {
+        val hits = ArrayList<Pair<Long, Long>>()
+        db.readableDatabase.rawQuery("""SELECT f.id, COALESCE(f.who, f.maybe) FROM faces f
+                WHERE f.photo_id = ? AND COALESCE(f.who, f.maybe) IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM face_marks m WHERE m.face_id = f.id AND m.ok = 1)""",
+            arrayOf(photo.toString())).use { while (it.moveToNext()) hits.add(it.getLong(0) to it.getLong(1)) }
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            for ((face, person) in hits) put(face, person, false)
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
         assignAll()
@@ -150,22 +171,31 @@ class Who(ctx: Context) {
             }
         }
         val people = pos.keys.toList()
-        val faces = ArrayList<Pair<Long, FloatArray>>()
-        if (people.isNotEmpty()) db.readableDatabase.rawQuery("SELECT id, v FROM faces", null).use {
-            while (it.moveToNext()) faces.add(it.getLong(0) to Db.floats(it.getBlob(1)))
+        class F(val id: Long, val photo: Long, val capture: Boolean, val v: FloatArray)
+        val faces = ArrayList<F>()
+        if (people.isNotEmpty()) db.readableDatabase.rawQuery(
+            "SELECT f.id, f.photo_id, p.date_source = '화면 캡처', f.v FROM faces f JOIN photos p ON p.id = f.photo_id", null).use {
+            while (it.moveToNext()) faces.add(F(it.getLong(0), it.getLong(1), it.getInt(2) == 1, Db.floats(it.getBlob(3))))
         }
+        // 추측: 사진·인물마다 하나만 남긴다 (같은 사진에 같은 사람이 둘일 수 없다. 그 사진에 정답 얼굴이 있으면 추측은 없다)
+        class Hit(val face: Long, val person: Long, val sim: Float, val found: Boolean)
+        val hits = HashMap<Pair<Long, Long>, Hit>() // (사진, 인물) → 가장 나은 추측
+        val refIn = HashSet<Pair<Long, Long>>()
         val w = db.writableDatabase
         w.beginTransaction()
         try {
             w.execSQL("UPDATE faces SET who = NULL, who_sim = NULL, maybe = NULL")
-            for ((id, v) in faces) {
+            for (f in faces) {
+                val id = f.id; val v = f.v
                 val m = marks[id]
                 val ref = m?.entries?.firstOrNull { it.value }?.key
                 if (ref != null) {
                     w.execSQL("UPDATE faces SET who = ?, who_sim = 1 WHERE id = ?", arrayOf<Any>(ref, id))
+                    refIn.add(f.photo to ref)
                     continue
                 }
                 if (m?.containsKey(NOBODY) == true) continue // 사용자가 '아님'으로 뺀 얼굴
+                if (f.capture) continue // 화면 캡처 속 얼굴(연예인·영상 통화 등)은 추측하지 않는다
                 // 인물마다 정답 얼굴과의 최대 유사도. 반례로 표시한 인물은 뺀다
                 val sims = people.filter { p -> m?.get(p) != false }.map { p -> p to pos[p]!!.maxOf { r -> dot(v, r) } }
                     .sortedByDescending { it.second }
@@ -173,12 +203,18 @@ class Who(ctx: Context) {
                 val (best, s) = sims[0]
                 // 2등: 다른 인물, 또는 이 인물의 반례(이 인물이 아니라고 한 얼굴과 더 닮았나)
                 val second = maxOf(sims.getOrNull(1)?.second ?: -1f, neg[best]?.maxOf { r -> dot(v, r) } ?: -1f)
-                when {
-                    s >= THRESHOLD && s - second >= MARGIN ->
-                        w.execSQL("UPDATE faces SET who = ?, who_sim = ? WHERE id = ?", arrayOf<Any>(best, s, id))
-                    s >= MAYBE && s > second ->
-                        w.execSQL("UPDATE faces SET maybe = ?, who_sim = ? WHERE id = ?", arrayOf<Any>(best, s, id))
-                }
+                val hit = when {
+                    s >= THRESHOLD && s - second >= MARGIN -> Hit(id, best, s, true)
+                    s >= MAYBE && s > second -> Hit(id, best, s, false)
+                    else -> null
+                } ?: continue
+                val key = f.photo to best
+                val cur = hits[key]
+                if (cur == null || (hit.found && !cur.found) || (hit.found == cur.found && hit.sim > cur.sim)) hits[key] = hit
+            }
+            for ((key, h) in hits) {
+                if (key in refIn) continue
+                w.execSQL("UPDATE faces SET ${if (h.found) "who" else "maybe"} = ?, who_sim = ? WHERE id = ?", arrayOf<Any>(h.person, h.sim, h.face))
             }
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }

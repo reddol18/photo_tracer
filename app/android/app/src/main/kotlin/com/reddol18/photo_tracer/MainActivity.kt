@@ -40,6 +40,12 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val db = Db.get(this)
+        // 인물 붙이는 규칙이 바뀐 버전이면 한 번 다시 붙인다 (작업 스레드 첫 일이라 화면 요청보다 먼저 끝난다)
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        if (prefs.getInt("who_rule", 0) < Who.RULE) worker.execute {
+            Who(this).assignAll()
+            prefs.edit().putInt("who_rule", Who.RULE).apply()
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app").setMethodCallHandler { call, result ->
             fun bg(pool: java.util.concurrent.ExecutorService = worker, block: () -> Any?) = pool.execute {
                 try {
@@ -105,7 +111,8 @@ class MainActivity : FlutterActivity() {
                 "whoMark" -> bg { Who(this).mark(call.argument<Number>("id")!!.toLong(), longs(call.argument("faces")), call.argument<Boolean>("ok") == true) }
                 "whoConfirm" -> bg { Who(this).confirmPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }
                 "whoReject" -> bg { Who(this).rejectPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }
-                "whoMerge" -> bg { Who(this).merge(longs(call.argument("ids"))) }
+                "whoRejectAll" -> bg { Who(this).rejectAll(call.argument<Number>("photo")!!.toLong()) }
+                "whoMerge" ->bg { Who(this).merge(longs(call.argument("ids"))) }
                 "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
                 "faceThumb" -> bg(thumbs) { faceThumb(db, call.argument<Number>("id")!!.toLong()) }
                 "photoInfo" -> bg {
