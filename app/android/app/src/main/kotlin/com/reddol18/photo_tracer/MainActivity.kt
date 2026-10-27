@@ -111,7 +111,11 @@ class MainActivity : FlutterActivity() {
                 "whoMark" -> bg { Who(this).mark(call.argument<Number>("id")!!.toLong(), longs(call.argument("faces")), call.argument<Boolean>("ok") == true) }
                 "whoConfirm" -> bg { Who(this).confirmPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }
                 "whoReject" -> bg { Who(this).rejectPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }
-                "whoRejectAll" -> bg { Who(this).rejectAll(call.argument<Number>("photo")!!.toLong()) }
+                // 인물 추측에서 뺀 이미지 (1 화면 캡처, 2 만든 이미지) — 잘못 뺀 게 없나 사람이 보게
+                "fakePhotos" -> bg { ids(db, "SELECT id FROM photos WHERE fake = ? ORDER BY COALESCE(taken_at, received_at, 0) DESC",
+                    call.argument<Number>("kind").toString()) }
+                "fakeCounts" -> bg { (1..2).map { k -> db.count("SELECT COUNT(*) FROM photos WHERE fake = ?", k.toString()) } }
+                "whoRejectAll" ->bg { Who(this).rejectAll(call.argument<Number>("photo")!!.toLong()) }
                 "whoMerge" ->bg { Who(this).merge(longs(call.argument("ids"))) }
                 "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
                 "faceThumb" -> bg(thumbs) { faceThumb(db, call.argument<Number>("id")!!.toLong()) }

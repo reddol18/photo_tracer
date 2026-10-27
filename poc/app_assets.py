@@ -12,6 +12,8 @@
     - 흔한 검색어 방향: assets/search/common.bin (아래 common)
   uv run app_assets.py common
     - 흔한 검색어 방향만 다시 만든다.
+  uv run app_assets.py fake
+    - 실사 아닌 이미지(화면 캡처·AI 그림·연예인 사진) 판정 문구 벡터만 다시 만든다.
   uv run app_assets.py compare <query_vectors_*.json>
     - 폰이 쓴 토큰 id와 벡터를 PC(Python 토크나이저 + text_w8.onnx)와 비교한다.
 """
@@ -126,6 +128,22 @@ def write_common() -> None:
     print(f"흔한 검색어 방향 ({len(GENERIC)}개 평균) → {out}")
 
 
+def write_fake() -> None:
+    """실사 아닌 이미지 판정 문구 벡터 → assets/search/fake.bin (float32 LE, 768씩: 실사 6 · 캡처 3 · 인물 2 순서).
+    앱(Fake.kt)은 사진 벡터와 (캡처 문구 최대 - 실사 문구 최대), (인물 문구 최대 - 실사 문구 최대)를 본다.
+    문구·문턱은 artificial_rule.py 로 고른 것: 썸네일 9354장에서 캡처 점수 상위는 모두 화면 캡처,
+    카메라 정보 없는 사진의 인물 점수 상위는 AI 아바타·연예인 사진."""
+    from artificial_eval import REAL
+    from artificial_rule import PROMPTS
+    from short_query_eval import text_vectors
+    T = np.concatenate([text_vectors(REAL), text_vectors(PROMPTS["capture"]), text_vectors(PROMPTS["person"])]).astype("<f4")
+    assert T.shape == (11, 768), T.shape
+    out = ASSETS / "search" / "fake.bin"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(T.tobytes())
+    print(f"실사 아닌 이미지 판정 문구 {len(T)}개 → {out}")
+
+
 def compare(path: Path) -> None:
     r = json.loads(path.read_text(encoding="utf-8"))
     texts = [bytes.fromhex(h).decode("utf-8") for h in r["queries"]]
@@ -149,8 +167,11 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["build"]:
         build()
         write_common()
+        write_fake()
     elif sys.argv[1:2] == ["common"]:
         write_common()
+    elif sys.argv[1:2] == ["fake"]:
+        write_fake()
     elif sys.argv[1:2] == ["compare"]:
         compare(Path(sys.argv[2]))
     else:

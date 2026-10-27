@@ -11,15 +11,15 @@ import android.util.Log
  *   자동 묶음(People)은 아이들끼리 섞여 중심이 흐려지므로 고를 때 참고로만 쓴다.
  * '이 사람 아님'으로 표시한 얼굴은 그 인물의 반례가 되어, 반례와 더 닮은 얼굴은 그 인물로 붙이지 않는다(차이 기준도 같이 본다).
  * 기준에 못 미치지만 가까운 얼굴(0.35 이상, 또는 차이가 모자람)은 maybe로 두어 사용자가 확인하게 한다.
- * 한 사진에서 한 인물은 얼굴 하나에만 붙인다(찾음 > 확인 필요 > 유사도 순). 화면 캡처 속 얼굴은 추측하지 않는다.
+ * 한 사진에서 한 인물은 얼굴 하나에만 붙인다(찾음 > 확인 필요 > 유사도 순). 실사 아닌 이미지(Fake) 속 얼굴은 추측하지 않는다.
  */
-class Who(ctx: Context) {
+class Who(private val ctx: Context) {
     companion object {
         const val THRESHOLD = 0.45f
         const val MARGIN = 0.10f
         const val MAYBE = 0.35f
         const val NOBODY = -1L // face_marks.person: '아무도 아님'으로 뺀 얼굴
-        const val RULE = 2 // 붙이는 규칙이 바뀌면 올린다 → 앱을 열 때 한 번 다시 붙인다 (2: 사진당 한 얼굴, 캡처 제외)
+        const val RULE = 6 // 붙이는 규칙이 바뀌면 올린다 → 앱을 열 때 한 번 다시 붙인다 (2: 사진당 한 얼굴, 캡처 제외, 3·4: 실사 아닌 이미지 제외)
     }
 
     private val db = Db.get(ctx)
@@ -160,6 +160,7 @@ class Who(ctx: Context) {
     /** 모든 얼굴을 정답·반례에 맞춰 다시 붙인다. 얼굴 1만 개 × 정답 수십 개라 1초 안쪽 */
     fun assignAll() {
         val t0 = System.currentTimeMillis()
+        Fake(ctx).judgeNew()
         val pos = HashMap<Long, ArrayList<FloatArray>>()
         val neg = HashMap<Long, ArrayList<FloatArray>>()
         val marks = HashMap<Long, HashMap<Long, Boolean>>() // 얼굴 → 인물 → ok
@@ -174,7 +175,7 @@ class Who(ctx: Context) {
         class F(val id: Long, val photo: Long, val capture: Boolean, val v: FloatArray)
         val faces = ArrayList<F>()
         if (people.isNotEmpty()) db.readableDatabase.rawQuery(
-            "SELECT f.id, f.photo_id, p.date_source = '화면 캡처', f.v FROM faces f JOIN photos p ON p.id = f.photo_id", null).use {
+            "SELECT f.id, f.photo_id, COALESCE(p.fake, 0) > 0, f.v FROM faces f JOIN photos p ON p.id = f.photo_id", null).use {
             while (it.moveToNext()) faces.add(F(it.getLong(0), it.getLong(1), it.getInt(2) == 1, Db.floats(it.getBlob(3))))
         }
         // 추측: 사진·인물마다 하나만 남긴다 (같은 사진에 같은 사람이 둘일 수 없다. 그 사진에 정답 얼굴이 있으면 추측은 없다)
@@ -195,7 +196,7 @@ class Who(ctx: Context) {
                     continue
                 }
                 if (m?.containsKey(NOBODY) == true) continue // 사용자가 '아님'으로 뺀 얼굴
-                if (f.capture) continue // 화면 캡처 속 얼굴(연예인·영상 통화 등)은 추측하지 않는다
+                if (f.capture) continue // 화면 캡처·만든 이미지(AI 아바타·연예인 사진) 속 얼굴은 추측하지 않는다 (Fake.kt)
                 // 인물마다 정답 얼굴과의 최대 유사도. 반례로 표시한 인물은 뺀다
                 val sims = people.filter { p -> m?.get(p) != false }.map { p -> p to pos[p]!!.maxOf { r -> dot(v, r) } }
                     .sortedByDescending { it.second }

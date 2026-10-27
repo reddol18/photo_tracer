@@ -10,6 +10,7 @@ import java.nio.ByteOrder
  * 앱 DB. 사진 원본·얼굴 사진은 저장하지 않는다 — 사진은 MediaStore ID로 가리키고, 분석 결과(벡터)만 둔다.
  *   photos   갤러리 사진. taken_at+date_source(찍은 날과 그 근거), received_at(받은 날, 대량 이동한 날은 비움)
  *            segment: 시간 구간 번호(찍은 날을 아는 사진만), is_rep: 구간 대표 사진
+ *            fake: 실사 아닌 이미지(1 화면 캡처, 2 만든 이미지, 0 실사, NULL 아직) — Fake.kt, fake_cap/fake_person: 그 점수
  *   vectors  SigLIP 사진 벡터(768). 대표 사진과 구간 밖 사진만
  *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 자동 묶음 번호(고를 때 참고), manual: 묶음에서 뺀 얼굴
  *            who/who_sim: 등록한 인물로 찾음(정답 얼굴과 최대 유사도), maybe: 확인이 필요한 인물
@@ -18,7 +19,7 @@ import java.nio.ByteOrder
  *   segments 구간 시작·끝·장 수 (스캔할 때마다 다시 만든다)
  *   runs     밤 작업 기록 (언제, 몇 장, 장당 시간, 쉼, 온도, 왜 멈췄나)
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 5) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 7) {
     companion object {
         @Volatile private var instance: Db? = null
         fun get(ctx: Context): Db = instance ?: synchronized(this) {
@@ -33,8 +34,9 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             return FloatArray(b.size / 4) { buf.getFloat() }
         }
 
-        /** 구간 밖(찍은 날을 모르거나 화면 캡처) 사진과 대표 사진만 장면 벡터를 만든다 */
-        const val NEEDS_VECTOR = "(p.segment IS NULL OR p.is_rep = 1)"
+        /** 구간 밖(찍은 날을 모르거나 화면 캡처) 사진과 대표 사진만 장면 벡터를 만든다.
+         *  카메라 정보 없는 사진도 — 실사 아닌 이미지 판정(Fake)에 쓴다 */
+        const val NEEDS_VECTOR = "(p.segment IS NULL OR p.is_rep = 1 OR p.date_source != '카메라')"
     }
 
     init {
@@ -46,7 +48,8 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             id INTEGER PRIMARY KEY, name TEXT, path TEXT, mime TEXT, w INTEGER, h INTEGER,
             taken_at INTEGER, date_source TEXT NOT NULL, received_at INTEGER, lat REAL, lon REAL,
             segment INTEGER, is_rep INTEGER NOT NULL DEFAULT 0,
-            faces_done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0)""")
+            faces_done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+            fake INTEGER, fake_cap REAL, fake_person REAL)""")
         db.execSQL("CREATE TABLE vectors (photo_id INTEGER PRIMARY KEY, v BLOB NOT NULL)")
         db.execSQL("""CREATE TABLE faces (id INTEGER PRIMARY KEY AUTOINCREMENT, photo_id INTEGER NOT NULL,
             x REAL, y REAL, w REAL, h REAL, v BLOB NOT NULL, person INTEGER, manual INTEGER NOT NULL DEFAULT 0)""")
@@ -74,6 +77,11 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
                 WHERE ok = 0 AND face_id NOT IN (SELECT face_id FROM face_marks WHERE ok = 1)""")
             db.execSQL("""UPDATE faces SET who = NULL, who_sim = NULL, maybe = NULL
                 WHERE id IN (SELECT face_id FROM face_marks WHERE person = ${Who.NOBODY})""")
+        }
+        if (old < 6) db.execSQL("ALTER TABLE photos ADD COLUMN fake INTEGER")
+        if (old < 7) { // 6에는 판정 결과만 있었다. 점수를 저장해 문턱만 바꿔 다시 적용할 수 있게
+            db.execSQL("ALTER TABLE photos ADD COLUMN fake_cap REAL")
+            db.execSQL("ALTER TABLE photos ADD COLUMN fake_person REAL")
         }
     }
 

@@ -382,13 +382,27 @@ class _PeoplePageState extends State<PeoplePage> {
     }
     final p = await channel.invokeMethod('people');
     final c = await channel.invokeMethod('persons');
+    final f = await channel.invokeMethod('fakeCounts');
     if (mounted) {
       setState(() {
         people = (p as List).map((e) => Map<String, dynamic>.from(e)).toList();
         clusters = (c as List).map((e) => Map<String, dynamic>.from(e)).toList();
+        fakes = (f as List).cast<int>();
       });
     }
   }
+
+  List<int> fakes = [0, 0]; // 인물 찾기에서 뺀 이미지: 화면 캡처, 만든 이미지(AI 그림·연예인 사진)
+
+  Widget fakeTile(BuildContext context, int kind, String title, String sub) => ListTile(
+        dense: true,
+        leading: Icon(kind == 1 ? Icons.screenshot_outlined : Icons.auto_awesome_outlined),
+        title: Text('$title ${fakes[kind - 1]}장'),
+        subtitle: Text(sub),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(
+            builder: (_) => PhotosPage(title: '$title ${fakes[kind - 1]}장', load: () => channel.invokeMethod('fakePhotos', {'kind': kind})))),
+      );
 
   @override
   void initState() {
@@ -462,6 +476,17 @@ class _PeoplePageState extends State<PeoplePage> {
             );
           }),
         ),
+      ),
+      // 실사가 아니라서 얼굴을 추측하지 않는 이미지 — 잘못 빠진 사진이 없나 볼 수 있게
+      SliverToBoxAdapter(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          ListTile(
+            title: Text('인물 찾기에서 뺀 이미지', style: Theme.of(context).textTheme.titleMedium),
+            subtitle: const Text('실제 사진이 아니라고 보고 얼굴을 추측하지 않습니다. 검색에는 그대로 나옵니다.'),
+          ),
+          fakeTile(context, 1, '화면 캡처', '스크린샷, 대화·쇼핑 화면 등'),
+          fakeTile(context, 2, '만든 이미지', 'AI 그림, 연예인·광고 사진 등 (카메라 정보 없는 사진만)'),
+        ]),
       ),
       SliverToBoxAdapter(
         child: ListTile(
