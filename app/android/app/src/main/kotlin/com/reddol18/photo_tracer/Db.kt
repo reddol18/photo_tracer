@@ -13,12 +13,12 @@ import java.nio.ByteOrder
  *   vectors  SigLIP 사진 벡터(768). 대표 사진과 구간 밖 사진만
  *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 자동 묶음 번호(고를 때 참고), manual: 묶음에서 뺀 얼굴
  *            who/who_sim: 등록한 인물로 찾음(정답 얼굴과 최대 유사도), maybe: 확인이 필요한 인물
- *   people     등록한 인물(이름은 사용자가 붙인 호칭, 폰 밖으로 나가지 않는다)
+ *   people     등록한 인물: 이름(또는 호칭), 관계, 생년(사진 속 나이 계산). 폰 밖으로 나가지 않는다
  *   face_marks 사용자 표시: 얼굴이 그 인물의 정답(ok=1)인지 아닌지(ok=0)
  *   segments 구간 시작·끝·장 수 (스캔할 때마다 다시 만든다)
  *   runs     밤 작업 기록 (언제, 몇 장, 장당 시간, 쉼, 온도, 왜 멈췄나)
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 3) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 4) {
     companion object {
         @Volatile private var instance: Db? = null
         fun get(ctx: Context): Db = instance ?: synchronized(this) {
@@ -63,6 +63,10 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
         if (old < 2) db.execSQL("ALTER TABLE faces ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
         if (old < 3) createPeople(db)
+        if (old == 3) {
+            db.execSQL("ALTER TABLE people ADD COLUMN relation TEXT")
+            db.execSQL("ALTER TABLE people ADD COLUMN birth_year INTEGER")
+        }
     }
 
     private fun createPeople(db: SQLiteDatabase) {
@@ -71,7 +75,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
         db.execSQL("ALTER TABLE faces ADD COLUMN maybe INTEGER")
         db.execSQL("CREATE INDEX faces_who ON faces(who)")
         db.execSQL("CREATE INDEX faces_maybe ON faces(maybe)")
-        db.execSQL("CREATE TABLE people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, relation TEXT, birth_year INTEGER)")
         db.execSQL("CREATE TABLE face_marks (face_id INTEGER NOT NULL, person INTEGER NOT NULL, ok INTEGER NOT NULL, PRIMARY KEY (face_id, person))")
     }
 

@@ -375,7 +375,7 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 
   Future<void> merge() async {
-    final names = {for (final p in people!) p['id'] as int: p['name'] as String};
+    final names = {for (final p in people!) p['id'] as int: personLabel(p)};
     final ok = await confirm(context, '${selected.length}명을 합칠까요?', '정답 얼굴을 모두 "${names[selected.first]}"(으)로 모읍니다.');
     if (!ok) return;
     await channel.invokeMethod('whoMerge', {'ids': selected});
@@ -435,7 +435,7 @@ class _PeoplePageState extends State<PeoplePage> {
                 load();
               },
               onLongPress: () => toggle(id),
-              child: faceTile(context, p[i]['face'] as int?, '${p[i]['name']} · ${p[i]['n']}장',
+              child: faceTile(context, p[i]['face'] as int?, '${personLabel(p[i])} · ${p[i]['n']}장',
                   on: selected.contains(id), mark: '${selected.indexOf(id) + 1}'),
             );
           }),
@@ -592,7 +592,8 @@ class WhoPage extends StatefulWidget {
 class _WhoPageState extends State<WhoPage> {
   static const kinds = {'all': '전체', 'ref': '정답', 'found': '찾음', 'maybe': '확인 필요'};
   List<Map<String, dynamic>>? photos; // id, face, sim, kind
-  String name = '';
+  Map<String, dynamic> person = {'name': ''}; // name, relation, birth_year
+  String get name => person['name'] as String;
   String kind = 'all';
   bool lowFirst = false; // 신뢰도 낮은 것부터 (잘못 찾은 사진 먼저)
   final selected = <int>{};
@@ -609,7 +610,7 @@ class _WhoPageState extends State<WhoPage> {
     if (!mounted) return;
     setState(() {
       photos = (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
-      name = p.firstWhere((e) => e['id'] == widget.id, orElse: () => {'name': ''})['name'] as String;
+      person = p.firstWhere((e) => e['id'] == widget.id, orElse: () => {'name': ''});
     });
   }
 
@@ -628,9 +629,9 @@ class _WhoPageState extends State<WhoPage> {
   void toggle(int id) => setState(() => selected.contains(id) ? selected.remove(id) : selected.add(id));
 
   Future<void> menu(String v) async {
-    if (v == 'rename') {
-      final n = await askName(context, '이름 바꾸기', name);
-      if (n != null) { await channel.invokeMethod('whoRename', {'id': widget.id, 'name': n}); load(); }
+    if (v == 'edit') {
+      final n = await askPerson(context, '인물 정보', person);
+      if (n != null) { await channel.invokeMethod('whoUpdate', {...n, 'id': widget.id}); load(); }
     } else if (v == 'delete') {
       if (await confirm(context, '"$name"을(를) 지울까요?', '정답 얼굴 표시도 함께 지웁니다. 사진은 지우지 않습니다.')) {
         await channel.invokeMethod('whoDelete', {'id': widget.id});
@@ -646,7 +647,8 @@ class _WhoPageState extends State<WhoPage> {
     return Scaffold(
       appBar: selected.isEmpty
           ? AppBar(
-              title: Text('$name · ${count['all']}장'),
+              title: Text('${personLabel(person)}${person['birth_year'] != null ? ' · ${person['birth_year']}년생' : ''}'
+                  ' · ${count['all']}장'),
               actions: [
                 TextButton.icon(
                   onPressed: () => setState(() => lowFirst = !lowFirst),
@@ -654,7 +656,7 @@ class _WhoPageState extends State<WhoPage> {
                   label: Text(lowFirst ? '신뢰도 낮은 순' : '날짜순'),
                 ),
                 PopupMenuButton<String>(onSelected: menu, itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'rename', child: Text('이름 바꾸기')),
+                  PopupMenuItem(value: 'edit', child: Text('이름·관계·생년 고치기')),
                   PopupMenuItem(value: 'delete', child: Text('인물 지우기')),
                 ]),
               ],
@@ -739,19 +741,44 @@ Future<bool> confirm(BuildContext context, String title, String body) async =>
     ) ??
     false;
 
-Future<String?> askName(BuildContext context, String title, String initial) {
-  final ctrl = TextEditingController(text: initial);
-  return showDialog<String>(
+/// 인물 정보: 이름(또는 호칭, 필수)·관계·생년. 돌려주는 맵은 채널에 그대로 넘긴다
+Future<Map<String, dynamic>?> askPerson(BuildContext context, String title, [Map<String, dynamic>? cur]) {
+  final name = TextEditingController(text: cur?['name'] as String? ?? '');
+  final relation = TextEditingController(text: cur?['relation'] as String? ?? '');
+  final birth = TextEditingController(text: cur?['birth_year']?.toString() ?? '');
+  return showDialog<Map<String, dynamic>>(
     context: context,
     builder: (context) => AlertDialog(
       title: Text(title),
-      content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: '예: 딸, 엄마, 할머니')),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: '이름 또는 호칭', hintText: '예: 지우, 엄마')),
+        TextField(controller: relation, decoration: const InputDecoration(labelText: '관계 (선택)', hintText: '예: 딸, 아내, 조카')),
+        TextField(controller: birth, keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: '태어난 해 (선택)', hintText: '예: 2022 — 사진마다 그때 나이를 보여 줍니다')),
+      ]),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('취소')),
-        FilledButton(onPressed: () => Navigator.pop(context, ctrl.text.trim().isEmpty ? null : ctrl.text.trim()), child: const Text('확인')),
+        FilledButton(
+          onPressed: () {
+            if (name.text.trim().isEmpty) return;
+            final y = int.tryParse(birth.text.trim());
+            Navigator.pop(context, {
+              'name': name.text.trim(),
+              'relation': relation.text.trim().isEmpty ? null : relation.text.trim(),
+              'birth_year': y != null && y > 1900 && y <= DateTime.now().year ? y : null,
+            });
+          },
+          child: const Text('확인'),
+        ),
       ],
     ),
   );
+}
+
+/// 화면에 쓸 인물 이름: "이름(관계)" — 이름과 관계가 같으면 하나만
+String personLabel(Map<String, dynamic> p) {
+  final r = p['relation'] as String?;
+  return r == null || r == p['name'] ? p['name'] as String : '${p['name']}($r)';
 }
 
 /// 사진 크게 보기. 얼굴마다 상자를 그리고 등록한 인물이면 이름을 단다. 얼굴을 누르면
@@ -775,7 +802,8 @@ class _PhotoView extends StatefulWidget {
 
 class _PhotoViewState extends State<_PhotoView> {
   Map<String, dynamic>? info;
-  Map<int, String> names = {};
+  Map<int, String> names = {}; // 메뉴용 이름
+  Map<int, String> labels = {}; // 얼굴 상자 위: 이름 + 그때 나이(생년과 찍은 해로)
 
   @override
   void initState() {
@@ -785,8 +813,19 @@ class _PhotoViewState extends State<_PhotoView> {
 
   Future<void> load() async {
     final m = Map<String, dynamic>.from(await channel.invokeMethod('photoInfo', {'id': widget.id}) as Map);
-    final p = (await channel.invokeMethod('people') as List).map((e) => Map<String, dynamic>.from(e));
-    if (mounted) setState(() { info = m; names = {for (final e in p) e['id'] as int: e['name'] as String}; });
+    final p = (await channel.invokeMethod('people') as List).map((e) => Map<String, dynamic>.from(e)).toList();
+    final year = m['taken'] == null ? null : DateTime.fromMillisecondsSinceEpoch(m['taken'] as int).year;
+    String label(Map<String, dynamic> e) {
+      final b = e['birth_year'] as int?;
+      return year == null || b == null || year < b ? e['name'] as String : '${e['name']} 약 ${year - b}살';
+    }
+    if (mounted) {
+      setState(() {
+        info = m;
+        names = {for (final e in p) e['id'] as int: personLabel(e)};
+        labels = {for (final e in p) e['id'] as int: label(e)};
+      });
+    }
   }
 
   Future<void> onFace(Map<String, dynamic> f) async {
@@ -806,9 +845,9 @@ class _PhotoViewState extends State<_PhotoView> {
     );
     if (choice == null || !mounted) return;
     if (choice == 'new') {
-      final n = await askName(context, '새 인물 이름', '');
+      final n = await askPerson(context, '새 인물');
       if (n == null) return;
-      await channel.invokeMethod('whoCreate', {'name': n, 'faces': [faceId]});
+      await channel.invokeMethod('whoCreate', {...n, 'faces': [faceId]});
     } else {
       final [op, person] = choice.split(':');
       await channel.invokeMethod('whoMark', {'id': int.parse(person), 'faces': [faceId], 'ok': op == 'ok'});
@@ -828,7 +867,7 @@ class _PhotoViewState extends State<_PhotoView> {
       text = '$taken$got · 날짜 근거: $src';
     }
     return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Flexible(child: FacePhoto(widget.id, faces: faces, names: names, who: widget.who, onFace: onFace)),
+      Flexible(child: FacePhoto(widget.id, faces: faces, names: labels, who: widget.who, onFace: onFace)),
       Padding(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
         child: Text(text, style: Theme.of(context).textTheme.bodySmall),
@@ -923,7 +962,8 @@ class _FaceBoxes extends CustomPainter {
         text: TextSpan(text: label, style: const TextStyle(color: Colors.black, fontSize: 11, fontWeight: FontWeight.bold)),
         textDirection: TextDirection.ltr,
       )..layout();
-      final at = Offset(r.left, (r.top - tp.height - 2).clamp(0, size.height - tp.height));
+      // 사진 밖으로 글자가 잘리지 않게 오른쪽 끝에서는 왼쪽으로 민다
+      final at = Offset(r.left.clamp(0, (size.width - tp.width - 4).clamp(0, size.width)), (r.top - tp.height - 2).clamp(0, size.height - tp.height));
       canvas.drawRect(Rect.fromLTWH(at.dx, at.dy, tp.width + 4, tp.height), Paint()..color = color);
       tp.paint(canvas, at + const Offset(2, 0));
     }

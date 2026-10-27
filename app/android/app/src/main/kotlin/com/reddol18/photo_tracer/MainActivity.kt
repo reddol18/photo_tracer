@@ -93,8 +93,14 @@ class MainActivity : FlutterActivity() {
                 // 등록한 인물
                 "people" -> bg { Who(this).people() }
                 "whoPhotos" -> bg { Who(this).photos(call.argument<Number>("id")!!.toLong()) }
-                "whoCreate" -> bg { Who(this).create(call.argument<String>("name")!!, longs(call.argument("faces"))) }
-                "whoRename" -> bg { Who(this).rename(call.argument<Number>("id")!!.toLong(), call.argument<String>("name")!!) }
+                "whoCreate" -> bg {
+                    Who(this).create(call.argument<String>("name")!!, call.argument("relation"), call.argument<Number>("birth_year")?.toInt(),
+                        longs(call.argument("faces")))
+                }
+                "whoUpdate" -> bg {
+                    Who(this).update(call.argument<Number>("id")!!.toLong(), call.argument<String>("name")!!, call.argument("relation"),
+                        call.argument<Number>("birth_year")?.toInt())
+                }
                 "whoDelete" -> bg { Who(this).delete(call.argument<Number>("id")!!.toLong()) }
                 "whoMark" -> bg { Who(this).mark(call.argument<Number>("id")!!.toLong(), longs(call.argument("faces")), call.argument<Boolean>("ok") == true) }
                 "whoConfirm" -> bg { Who(this).confirmPhotos(call.argument<Number>("id")!!.toLong(), longs(call.argument("photos"))) }

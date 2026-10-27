@@ -23,26 +23,31 @@ class Who(ctx: Context) {
 
     fun people(): List<Map<String, Any?>> {
         val out = ArrayList<Map<String, Any?>>()
-        db.readableDatabase.rawQuery("""SELECT p.id, p.name,
+        db.readableDatabase.rawQuery("""SELECT p.id, p.name, p.relation, p.birth_year,
                 (SELECT COUNT(DISTINCT photo_id) FROM faces WHERE who = p.id),
                 (SELECT COUNT(*) FROM face_marks WHERE person = p.id AND ok = 1),
                 (SELECT face_id FROM face_marks WHERE person = p.id AND ok = 1 LIMIT 1)
                 FROM people p ORDER BY p.id""", null).use {
-            while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "name" to it.getString(1), "n" to it.getInt(2),
-                "refs" to it.getInt(3), "face" to (if (it.isNull(4)) null else it.getLong(4))))
+            while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "name" to it.getString(1), "relation" to it.getString(2),
+                "birth_year" to (if (it.isNull(3)) null else it.getInt(3)), "n" to it.getInt(4),
+                "refs" to it.getInt(5), "face" to (if (it.isNull(6)) null else it.getLong(6))))
         }
         return out
     }
 
-    /** 새 인물: 고른 얼굴들을 정답으로 */
-    fun create(name: String, faces: List<Long>): Long {
-        val id = db.writableDatabase.insert("people", null, ContentValues().apply { put("name", name) })
+    private fun info(name: String, relation: String?, birthYear: Int?) = ContentValues().apply {
+        put("name", name); put("relation", relation?.ifBlank { null }); put("birth_year", birthYear)
+    }
+
+    /** 새 인물: 고른 얼굴들을 정답으로. relation(관계)·birthYear(생년)는 비워도 된다 */
+    fun create(name: String, relation: String?, birthYear: Int?, faces: List<Long>): Long {
+        val id = db.writableDatabase.insert("people", null, info(name, relation, birthYear))
         mark(id, faces, true)
         return id
     }
 
-    fun rename(id: Long, name: String) {
-        db.writableDatabase.execSQL("UPDATE people SET name = ? WHERE id = ?", arrayOf<Any>(name, id))
+    fun update(id: Long, name: String, relation: String?, birthYear: Int?) {
+        db.writableDatabase.update("people", info(name, relation, birthYear), "id = ?", arrayOf(id.toString()))
     }
 
     fun delete(id: Long) {
