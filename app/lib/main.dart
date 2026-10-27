@@ -17,8 +17,30 @@ class PhotoTracerApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
         title: 'Photo Tracer',
         theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+        scrollBehavior: const _FastScroll(),
         home: const Home(),
       );
+}
+
+/// 스크롤되는 곳마다 전체 중 어디쯤인지 보여 주는 반투명 막대. 막대를 끌면 사진 그리드처럼 긴 목록도 빨리 넘긴다.
+/// 안드로이드 기본은 막대가 없어서(데스크톱만 그린다) 모든 스크롤에 직접 단다. 한 줄 입력칸은 Flutter가 알아서 뺀다
+class _FastScroll extends MaterialScrollBehavior {
+  const _FastScroll();
+
+  @override
+  Widget buildScrollbar(BuildContext context, Widget child, ScrollableDetails details) {
+    final vertical = axisDirectionToAxis(details.direction) == Axis.vertical;
+    return RawScrollbar(
+      controller: details.controller,
+      thumbVisibility: true,
+      interactive: true, // 손가락으로 막대를 끌어 스크롤 (터치는 막대 둘레 48px까지 잡힌다)
+      thickness: vertical ? 8 : 5,
+      radius: const Radius.circular(4),
+      minThumbLength: 48, // 사진이 수천 장이어도 잡을 수 있게
+      thumbColor: Theme.of(context).colorScheme.onSurface.withAlpha(90),
+      child: child,
+    );
+  }
 }
 
 class Home extends StatefulWidget {
@@ -802,7 +824,9 @@ class _PhotoView extends StatefulWidget {
 
 class _PhotoViewState extends State<_PhotoView> {
   Map<String, dynamic>? info;
-  Map<int, String> names = {}; // 메뉴용 이름
+  List<Map<String, dynamic>> people = [];
+  int? year; // 찍은 해 (그때 나이 계산용)
+  Map<int, String> names = {}; // 고르기 창용 이름
   Map<int, String> labels = {}; // 얼굴 상자 위: 이름 + 그때 나이(생년과 찍은 해로)
 
   @override
@@ -822,6 +846,8 @@ class _PhotoViewState extends State<_PhotoView> {
     if (mounted) {
       setState(() {
         info = m;
+        people = p;
+        this.year = year;
         names = {for (final e in p) e['id'] as int: personLabel(e)};
         labels = {for (final e in p) e['id'] as int: label(e)};
       });
@@ -831,17 +857,73 @@ class _PhotoViewState extends State<_PhotoView> {
   Future<void> onFace(Map<String, dynamic> f) async {
     final faceId = f['id'] as int;
     final cur = (f['who'] ?? f['maybe']) as int?;
+    // '아님'은 이 얼굴에 붙은 인물, 그리고 지금 보고 있는 인물 페이지의 인물
+    final no = {?cur, ?widget.who}.where(names.containsKey).toList();
+    // 붙은 인물을 맨 앞에. 인물이 많아도 옆으로 넘기며 얼굴로 고른다
+    final list = [...people.where((e) => e['id'] == cur), ...people.where((e) => e['id'] != cur)];
     final choice = await showModalBottomSheet<String>(
       context: context,
-      builder: (context) => SafeArea(
-        child: ListView(shrinkWrap: true, children: [
-          ListTile(leading: const Icon(Icons.person_add), title: const Text('새 인물로 등록'), onTap: () => Navigator.pop(context, 'new')),
-          for (final e in names.entries)
-            ListTile(leading: const Icon(Icons.check), title: Text('"${e.value}"의 정답 얼굴로'), onTap: () => Navigator.pop(context, 'ok:${e.key}')),
-          if (cur != null)
-            ListTile(leading: const Icon(Icons.block), title: Text('"${names[cur]}" 아님'), onTap: () => Navigator.pop(context, 'no:$cur')),
-        ]),
-      ),
+      builder: (context) {
+        final t = Theme.of(context).textTheme;
+        Widget card({required Widget face, required String name, String? sub, String? age, bool on = false, required String value}) => InkWell(
+              onTap: () => Navigator.pop(context, value),
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 92,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Column(children: [
+                    Container(
+                      width: 72, height: 72,
+                      decoration: on ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Theme.of(context).colorScheme.primary, width: 3)) : null,
+                      child: ClipOval(child: face),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(name, style: t.labelLarge, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    Text(sub ?? '', style: t.bodySmall, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    Text(age ?? '', style: t.bodySmall, maxLines: 1),
+                  ]),
+                ),
+              ),
+            );
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (no.isNotEmpty)
+                Wrap(spacing: 8, children: [
+                  for (final p in no)
+                    ActionChip(
+                      avatar: const Icon(Icons.block, size: 18),
+                      label: Text('"${names[p]}" 아님'),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => Navigator.pop(context, 'no:$p'),
+                    ),
+                ]),
+              Padding(padding: const EdgeInsets.fromLTRB(4, 12, 4, 4), child: Text('이 얼굴은 누구인가요? (정답 얼굴로 등록)', style: t.titleSmall)),
+              SizedBox(
+                height: 148,
+                child: ListView(scrollDirection: Axis.horizontal, children: [
+                  card(face: Container(color: Colors.black12, child: const Icon(Icons.person_add, size: 32)), name: '새 인물', value: 'new'),
+                  for (final p in list)
+                    card(
+                      face: p['face'] == null ? Container(color: Colors.black12) : Thumb(p['face'] as int, face: true),
+                      name: p['name'] as String,
+                      sub: p['relation'] as String?,
+                      age: switch ((year, p['birth_year'] as int?)) {
+                        (final y?, final b?) when y >= b => '약 ${y - b}살',
+                        (_, final b?) => '$b년생',
+                        _ => null,
+                      },
+                      on: p['id'] == cur,
+                      value: 'ok:${p['id']}',
+                    ),
+                ]),
+              ),
+            ]),
+          ),
+        );
+      },
     );
     if (choice == null || !mounted) return;
     if (choice == 'new') {
