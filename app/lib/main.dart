@@ -617,7 +617,12 @@ class _WhoPageState extends State<WhoPage> {
   Map<String, dynamic> person = {'name': ''}; // name, relation, birth_year
   String get name => person['name'] as String;
   String kind = 'all';
+  int? year; // 찍은 해로 거르기. null: 모든 해, 0: 찍은 날 모름
   bool lowFirst = false; // 신뢰도 낮은 것부터 (잘못 찾은 사진 먼저)
+
+  static int yearOf(Map<String, dynamic> p) => p['taken'] == null ? 0 : DateTime.fromMillisecondsSinceEpoch(p['taken'] as int).year;
+  bool kindOk(Map<String, dynamic> p, String k) => k == 'all' || p['kind'] == k;
+  bool yearOk(Map<String, dynamic> p, int? y) => y == null || yearOf(p) == y;
   final selected = <int>{};
 
   @override
@@ -637,7 +642,7 @@ class _WhoPageState extends State<WhoPage> {
   }
 
   List<Map<String, dynamic>> get shown {
-    final list = photos!.where((p) => kind == 'all' || p['kind'] == kind).toList();
+    final list = photos!.where((p) => kindOk(p, kind) && yearOk(p, year)).toList();
     if (lowFirst) list.sort((a, b) => (a['sim'] as num).compareTo(b['sim'] as num));
     return list;
   }
@@ -665,12 +670,22 @@ class _WhoPageState extends State<WhoPage> {
   @override
   Widget build(BuildContext context) {
     final list = photos == null ? null : shown;
-    final count = {for (final k in kinds.keys) k: photos?.where((p) => k == 'all' || p['kind'] == k).length ?? 0};
+    final all = photos ?? [];
+    // 개수는 서로 걸러서: 종류 칩은 고른 해 안에서, 연도 칩은 고른 종류 안에서
+    final count = {for (final k in kinds.keys) k: all.where((p) => kindOk(p, k) && yearOk(p, year)).length};
+    final byYear = <int, int>{};
+    for (final p in all.where((p) => kindOk(p, kind))) {
+      byYear.update(yearOf(p), (n) => n + 1, ifAbsent: () => 1);
+    }
+    if (year != null) byYear.putIfAbsent(year!, () => 0); // 종류를 바꿔 0장이 돼도 고른 칩은 남긴다
+    final years = byYear.keys.toList()..sort((a, b) => b.compareTo(a)); // 최근 해부터, 모름(0)은 맨 뒤
+    final birth = person['birth_year'] as int?;
+    String yearLabel(int y) => y == 0 ? '찍은 날 모름' : birth != null && y >= birth ? '$y · ${y - birth}살' : '$y';
     return Scaffold(
       appBar: selected.isEmpty
           ? AppBar(
               title: Text('${personLabel(person)}${person['birth_year'] != null ? ' · ${person['birth_year']}년생' : ''}'
-                  ' · ${count['all']}장'),
+                  ' · ${all.length}장'),
               actions: [
                 TextButton.icon(
                   onPressed: () => setState(() => lowFirst = !lowFirst),
@@ -702,6 +717,23 @@ class _WhoPageState extends State<WhoPage> {
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: ChoiceChip(label: Text('${kinds[k]} ${count[k]}'), selected: kind == k, onSelected: (_) => setState(() => kind = k)),
+                    ),
+                ]),
+              ),
+              // 찍은 해별로: 해마다 정답 얼굴을 몇 개씩 고르기 쉽게. 생년이 있으면 그해 나이도
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                child: Row(children: [
+                  for (final y in [null, ...years.where((y) => y != 0), if (byYear.containsKey(0)) 0])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ChoiceChip(
+                        label: Text(y == null ? '모든 해 ${byYear.values.fold(0, (a, b) => a + b)}' : '${yearLabel(y)} (${byYear[y]})'),
+                        visualDensity: VisualDensity.compact,
+                        selected: year == y,
+                        onSelected: (_) => setState(() => year = y),
+                      ),
                     ),
                 ]),
               ),

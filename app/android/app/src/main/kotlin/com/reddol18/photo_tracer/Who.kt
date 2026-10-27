@@ -108,13 +108,13 @@ class Who(ctx: Context) {
 
     /**
      * 인물의 사진. kind: ref(정답), found(찾음), maybe(확인 필요). sim: 그 사진 속 이 인물 얼굴의 정답 얼굴과 최대 유사도.
-     * face: 그 얼굴(사진 위에 초록 상자로 그린다). 찍은 날 최근 순.
+     * face: 그 얼굴(사진 위에 초록 상자로 그린다). taken: 찍은 날(ms, 모르면 null — 연도 거르기용). 찍은 날 최근 순.
      */
     fun photos(person: Long): List<Map<String, Any?>> {
         val out = LinkedHashMap<Long, Map<String, Any?>>()
         db.readableDatabase.rawQuery("""
             SELECT f.photo_id, f.id, f.who_sim,
-                   CASE WHEN m.ok = 1 THEN 'ref' WHEN f.who = ?1 THEN 'found' ELSE 'maybe' END
+                   CASE WHEN m.ok = 1 THEN 'ref' WHEN f.who = ?1 THEN 'found' ELSE 'maybe' END, p.taken_at
             FROM faces f JOIN photos p ON p.id = f.photo_id
             LEFT JOIN face_marks m ON m.face_id = f.id AND m.person = ?1
             WHERE (f.who = ?1 OR f.maybe = ?1 OR m.ok = 1) AND COALESCE(m.ok, 1) = 1
@@ -124,7 +124,7 @@ class Who(ctx: Context) {
                 val photo = it.getLong(0)
                 if (photo in out) continue // 한 사진에 둘이면 정답·높은 쪽
                 out[photo] = mapOf("id" to photo, "face" to it.getLong(1), "sim" to (if (it.isNull(2)) 1.0 else it.getDouble(2)),
-                    "kind" to it.getString(3))
+                    "kind" to it.getString(3), "taken" to (if (it.isNull(4)) null else it.getLong(4)))
             }
         }
         return out.values.toList()
