@@ -24,6 +24,7 @@ import java.util.concurrent.Executors
 class MainActivity : FlutterActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val thumbs = Executors.newFixedThreadPool(4)
+    private val clusterer = Executors.newSingleThreadExecutor() // 다시 묶는 동안에도 다른 화면 요청이 기다리지 않게
     private val main = Handler(Looper.getMainLooper())
     private var permissionResult: MethodChannel.Result? = null
 
@@ -94,7 +95,8 @@ class MainActivity : FlutterActivity() {
                     out
                 }
                 "personPhotos" -> bg { People(this).photos(call.argument<Number>("id")!!.toLong()) }
-                "recluster" -> bg { People(this).full() }
+                "recluster" -> bg(clusterer) { People(this).full() }
+                "clusterInfo" -> bg { People(this).info() }
                 // 등록한 인물
                 "people" -> bg { Who(this).people() }
                 "whoPhotos" -> bg { Who(this).photos(call.argument<Number>("id")!!.toLong()) }

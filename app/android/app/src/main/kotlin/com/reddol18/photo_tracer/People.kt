@@ -16,28 +16,42 @@ class People(ctx: Context) {
     companion object {
         const val THRESHOLD = 0.45f
         const val MIN_SHOW = 3
+        @Volatile var running = 0L // 처음부터 다시 묶는 중이면 시작 시각(화면을 떠났다 와도 묶는 중인지 알 수 있게)
     }
 
     private val db = Db.get(ctx)
+    // 언제 묶었나: 마지막 full(시각, 얼굴 수, 걸린 ms)과 그 뒤 assign으로 붙인 얼굴 수·시각. 다시 묶기 예상 시간에 쓴다
+    private val prefs = ctx.getSharedPreferences("clusters", Context.MODE_PRIVATE)
+
+    /** 화면용: 마지막으로 묶은 때와 다시 묶을 때 예상 시간. 기록이 없으면(이 기능 전에 묶음) full_at = 0 */
+    fun info(): Map<String, Any?> = mapOf(
+        "full_at" to prefs.getLong("full_at", 0), "full_faces" to prefs.getInt("full_faces", 0),
+        "full_ms" to prefs.getLong("full_ms", 0), "added" to prefs.getInt("added", 0), "added_at" to prefs.getLong("added_at", 0),
+        "faces" to db.count("SELECT COUNT(*) FROM faces"), "running" to running)
 
     /** 밤 작업이 끝났을 때: 묶음이 없으면 처음부터, 있으면 새 얼굴만 붙인다 */
-    fun cluster() {
+    fun cluster() = synchronized(People) {
         if (db.count("SELECT COUNT(*) FROM faces WHERE person IS NOT NULL") == 0) full() else assign()
     }
 
     /** 처음부터 다시 묶기. 묶음 번호는 큰 묶음부터 1, 2, … */
-    fun full() {
+    fun full(): Unit = synchronized(People) { // 밤 작업의 cluster()와 겹치지 않게
         val t0 = System.currentTimeMillis()
-        val (ids, vecs) = load("1 = 1")
-        if (vecs.isEmpty()) return
-        val g = Groups(vecs[0].size)
-        val label = IntArray(vecs.size) { g.add(vecs[it]) }
-        val size = IntArray(g.size).also { s -> label.forEach { s[it]++ } }
-        val order = (0 until g.size).sortedByDescending { size[it] }
-        val renumber = IntArray(g.size).also { r -> order.forEachIndexed { k, c -> r[c] = k + 1 } }
-        write(ids, label.map { renumber[it] }, resetManual = true)
-        Log.i("PhotoTracer", "얼굴 ${vecs.size}개 → 묶음 ${g.size}개 (${MIN_SHOW}장 이상 ${size.count { it >= MIN_SHOW }}개)," +
-            " ${System.currentTimeMillis() - t0}ms")
+        running = t0
+        try {
+            val (ids, vecs) = load("1 = 1")
+            if (vecs.isEmpty()) return
+            val g = Groups(vecs[0].size)
+            val label = IntArray(vecs.size) { g.add(vecs[it]) }
+            val size = IntArray(g.size).also { s -> label.forEach { s[it]++ } }
+            val order = (0 until g.size).sortedByDescending { size[it] }
+            val renumber = IntArray(g.size).also { r -> order.forEachIndexed { k, c -> r[c] = k + 1 } }
+            write(ids, label.map { renumber[it] }, resetManual = true)
+            val ms = System.currentTimeMillis() - t0
+            prefs.edit().putLong("full_at", System.currentTimeMillis()).putInt("full_faces", vecs.size).putLong("full_ms", ms)
+                .putInt("added", 0).putLong("added_at", 0).apply()
+            Log.i("PhotoTracer", "얼굴 ${vecs.size}개 → 묶음 ${g.size}개 (${MIN_SHOW}장 이상 ${size.count { it >= MIN_SHOW }}개), ${ms}ms")
+        } finally { running = 0 }
     }
 
     /** 아직 묶이지 않은 얼굴(손으로 뺀 것 제외)을 기존 묶음 중심에 붙이고, 안 맞으면 새 번호로 묶는다 */
@@ -55,6 +69,7 @@ class People(ctx: Context) {
             persons[k]
         }
         write(ids, out, resetManual = false)
+        prefs.edit().putInt("added", prefs.getInt("added", 0) + vecs.size).putLong("added_at", System.currentTimeMillis()).apply()
         Log.i("PhotoTracer", "새 얼굴 ${vecs.size}개 붙임, ${System.currentTimeMillis() - t0}ms")
     }
 

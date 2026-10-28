@@ -381,21 +381,89 @@ class _PeoplePageState extends State<PeoplePage> {
   List<Map<String, dynamic>>? clusters;
   final selected = <int>[]; // 길게 눌러 고른 등록 인물(합치기). 처음 고른 인물로 합친다
 
-  Future<void> load({bool recluster = false}) async {
-    if (recluster) {
-      setState(() => clusters = null);
-      await channel.invokeMethod('recluster');
-    }
+  Future<void> load() async {
     final p = await channel.invokeMethod('people');
     final c = await channel.invokeMethod('persons');
     final f = await channel.invokeMethod('fakeCounts');
+    final i = Map<String, dynamic>.from(await channel.invokeMethod('clusterInfo') as Map);
     if (mounted) {
       setState(() {
         people = (p as List).map((e) => Map<String, dynamic>.from(e)).toList();
         clusters = (c as List).map((e) => Map<String, dynamic>.from(e)).toList();
         fakes = (f as List).cast<int>();
+        info = i;
       });
+      if ((i['running'] as num) > 0) watch(); // 다른 화면에 갔다 와도 묶는 중이면 진행을 이어 보여 준다
     }
+  }
+
+  // 자동 묶음: 언제 묶었나(People.info)와 다시 묶는 동안의 진행
+  Map<String, dynamic>? info;
+  Timer? ticker;
+
+  /// 다시 묶기 예상 시간(ms): 지난번 처음부터 묶은 시간을 얼굴 수에 비례해 늘린다. 기록이 없으면 null
+  int? estimateMs(Map<String, dynamic> i) {
+    final ms = i['full_ms'] as int, n = i['full_faces'] as int;
+    return ms > 0 && n > 0 ? (ms * (i['faces'] as int) / n).round() : null;
+  }
+
+  String fmtDuration(int ms) =>
+      ms < 5000 ? '몇 초' : ms < 90000 ? '약 ${(ms / 1000).round()}초' : '약 ${(ms / 60000).round()}분';
+
+  String clusterWhen(Map<String, dynamic> i) {
+    final at = i['full_at'] as int, added = i['added'] as int;
+    if (at == 0) return '언제 묶었는지 기록이 없습니다(이 버전 전에 만든 묶음). 다시 묶으면 기록됩니다.';
+    return '${fmtDate(at, time: true)}에 처음부터 묶음 · 얼굴 ${fmtInt(i['full_faces'])}개, ${fmtDuration(i['full_ms'] as int)} 걸림'
+        '${added > 0 ? '\n그 뒤 밤 작업이 새 얼굴 ${fmtInt(added)}개를 붙임 (${fmtDate(i['added_at'] as int, time: true)})' : ''}';
+  }
+
+  Future<void> recluster() async {
+    final i = info!;
+    final est = estimateMs(i);
+    final ok = await confirm(context, '자동 묶음을 다시 만들까요?',
+        '등록한 인물과 정답 얼굴은 그대로 둡니다.\n\n'
+        '예상 시간: ${est != null ? fmtDuration(est) : '처음 재는 것이라 알 수 없습니다. 얼굴이 ${fmtInt(i['faces'])}개라 몇 분 걸릴 수 있습니다'}\n'
+        '다른 탭으로 가도 계속 묶습니다. 앱을 완전히 닫으면 멈추고 지금 묶음이 그대로 남습니다.');
+    if (!ok) return;
+    channel.invokeMethod('recluster'); // 기다리지 않는다 — 끝났는지는 watch가 clusterInfo로 본다
+    setState(() => info = {...i, 'running': DateTime.now().millisecondsSinceEpoch});
+    watch();
+  }
+
+  void watch() {
+    ticker ??= Timer.periodic(const Duration(seconds: 1), (_) async {
+      final i = Map<String, dynamic>.from(await channel.invokeMethod('clusterInfo') as Map);
+      if (!mounted) return;
+      if ((i['running'] as num) == 0) {
+        ticker?.cancel();
+        ticker = null;
+        load();
+      } else {
+        setState(() => info = i);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    ticker?.cancel();
+    super.dispose();
+  }
+
+  Widget clusterProgress(Map<String, dynamic> i) {
+    final elapsed = DateTime.now().millisecondsSinceEpoch - (i['running'] as num).toInt();
+    final est = estimateMs(i);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        LinearProgressIndicator(value: est != null && est > 0 ? (elapsed / est).clamp(0.0, 0.95) : null),
+        const SizedBox(height: 8),
+        Text('묶는 중… ${(elapsed / 1000).round()}초 지남'
+            '${est != null ? ' (예상 ${fmtDuration(est)})' : ' (처음이라 예상 시간을 모릅니다)'}'
+            '\n다른 탭으로 가도 계속됩니다. 끝나면 새 묶음이 보입니다.',
+            style: Theme.of(context).textTheme.bodySmall),
+      ]),
+    );
   }
 
   List<int> fakes = [0, 0]; // 인물 찾기에서 뺀 이미지: 화면 캡처, 만든 이미지(AI 그림·연예인 사진)
@@ -446,8 +514,9 @@ class _PeoplePageState extends State<PeoplePage> {
 
   @override
   Widget build(BuildContext context) {
-    final p = people, c = clusters;
-    if (p == null || c == null) return const Center(child: CircularProgressIndicator());
+    final p = people, c = clusters, ci = info;
+    if (p == null || c == null || ci == null) return const Center(child: CircularProgressIndicator());
+    final busy = (ci['running'] as num) > 0;
     const grid = SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 0.8);
     return CustomScrollView(slivers: [
       SliverToBoxAdapter(
@@ -497,16 +566,16 @@ class _PeoplePageState extends State<PeoplePage> {
       SliverToBoxAdapter(
         child: ListTile(
           title: Text('자동 묶음 (참고용)', style: Theme.of(context).textTheme.titleMedium),
-          subtitle: const Text('비슷한 얼굴끼리 자동으로 묶은 것입니다. 아이들끼리 섞일 수 있어 정답 얼굴을 고를 때만 쓰세요.'),
+          subtitle: Text('비슷한 얼굴끼리 자동으로 묶은 것입니다. 아이들끼리 섞일 수 있어 정답 얼굴을 고를 때만 쓰세요.\n${clusterWhen(ci)}'),
+          isThreeLine: true,
           trailing: IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: '처음부터 다시 묶기',
-            onPressed: () async {
-              if (await confirm(context, '자동 묶음을 다시 만들까요?', '등록한 인물과 정답 얼굴은 그대로 둡니다.')) load(recluster: true);
-            },
+            onPressed: busy ? null : recluster,
           ),
         ),
       ),
+      if (busy) SliverToBoxAdapter(child: clusterProgress(ci)),
       SliverPadding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         sliver: SliverGrid(
