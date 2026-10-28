@@ -170,6 +170,8 @@ class MainActivity : FlutterActivity() {
             "battery_exempt" to pm.isIgnoringBatteryOptimizations(packageName),
             "manufacturer" to Build.MANUFACTURER,
             "running" to Indexer.isRunning(),
+            "rest_why" to Indexer.restWhy,
+            "rest_left" to ((Indexer.restUntil - System.currentTimeMillis()) / 1000).coerceAtLeast(0),
             "night_on" to IndexWorker.nightOn(this),
             "scan_phase" to Scanner.phase,
             "scan_done" to Scanner.done,

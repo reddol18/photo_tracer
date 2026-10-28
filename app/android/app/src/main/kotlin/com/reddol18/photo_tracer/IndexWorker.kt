@@ -95,9 +95,11 @@ class IndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             Log.w("PhotoTracer", "FGS를 띄우지 못함", e)
             "FGS 못 띄움: ${e.javaClass.simpleName}"
         }
-        val indexer = Indexer(applicationContext, mode, { isStopped }) { done, total ->
+        var last = 0 to 0
+        val indexer = Indexer(applicationContext, mode, { isStopped }, { done, total ->
+            last = done to total
             if (done % 10 == 0 || done == total) notify(done, total)
-        }
+        }) { why -> notify(last.first, last.second, if (why == null) "사진 정리 중" else "잠시 쉬는 중 ($why)") }
         // 멈추라는 신호가 오면 코루틴이 취소되어 이 블록 뒤는 돌지 않는다 — 멈춘 이유는 블록 안에서 남긴다
         withContext(Dispatchers.IO) {
             val changed = Scanner(applicationContext).scan { done, total -> notify(done, total, "갤러리 읽는 중") }

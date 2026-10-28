@@ -171,6 +171,15 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
         ),
       );
 
+  /// Indexer.rest()의 이유 → 사용자에게 보일 문장
+  String restText(String why) => why.startsWith('배터리')
+      ? '배터리가 뜨거워서(${why.substring(4)}) 식히는 중입니다.'
+      : why.startsWith('발열')
+          ? '폰이 뜨거워서 식히는 중입니다.'
+          : why == '속도 저하'
+              ? '폰이 느려져서(열 때문일 수 있음) 잠시 쉽니다.'
+              : '폰을 쓰는 중이라 기다립니다.';
+
   /// 일 하나의 막대: 끝남(흐린 회색, 꽉 참) · 하는 중(진한 색) · 기다림(옅은 색, 밤 작업이 아직 안 돔)
   Widget taskBar(BuildContext context, String label, int done, int total, bool running, {String? note}) {
     final cs = Theme.of(context).colorScheme;
@@ -252,7 +261,7 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(st['running'] == true
-                      ? '지금 정리하고 있습니다'
+                      ? st['rest_why'] != null ? '잠시 쉬는 중입니다' : '지금 정리하고 있습니다'
                       : total > 0 && done >= total
                           ? '정리가 끝났습니다'
                           : st['night_on'] == true ? '오늘 밤 충전기에 꽂아 두세요' : '밤 정리가 꺼져 있습니다',
@@ -261,7 +270,10 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
               Text(st['scan_phase'] != null
                   ? scanText(st)
                   : st['running'] == true
-                      ? '일마다 아래 막대로 보여 줍니다. 진한 막대가 지금 하고 있는 일입니다.'
+                      // 쉬는 동안은 숫자가 그대로라 멈춘 것처럼 보인다 → 이유와 남은 시간을 보인다
+                      ? st['rest_why'] != null
+                          ? '${restText('${st['rest_why']}')} 약 ${(st['rest_left'] as int) ~/ 60 + 1}분 뒤 이어서 합니다.'
+                          : '일마다 아래 막대로 보여 줍니다. 진한 막대가 지금 하고 있는 일입니다.'
                       : st['night_on'] == true
                           ? '충전 중이고 화면이 꺼져 있을 때 조금씩 정리합니다. 처음에는 며칠 밤 걸릴 수 있습니다.'
                           : '위 스위치를 켜거나 "지금 시작"을 누르면 정리합니다.'),

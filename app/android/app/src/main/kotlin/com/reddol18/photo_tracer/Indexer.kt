@@ -23,6 +23,7 @@ class Indexer(
     private val mode: String,
     private val stopped: () -> Boolean,
     private val progress: (done: Int, total: Int) -> Unit,
+    private val resting: (why: String?) -> Unit = {},
 ) {
     companion object {
         const val REST_MS = 120_000L
@@ -37,6 +38,11 @@ class Indexer(
         fun isRunning() = running.get()
         /** 도는 작업의 mode (안 돌면 null) */
         @Volatile var runningMode: String? = null
+            private set
+        /** 쉬는 중이면 이유와 다시 시작할 시각(ms) — 쉬는 동안 진행이 멈춰 고장처럼 보이지 않게 화면에 보인다 */
+        @Volatile var restWhy: String? = null
+            private set
+        @Volatile var restUntil = 0L
             private set
         /** 멈춤 버튼: 도는 작업(밤·시험)을 다음 장 전에 끝낸다. 밤 일정은 남아 다음 충전 때 다시 깨어난다 */
         fun requestStop() = userStop.set(true)
@@ -267,9 +273,14 @@ class Indexer(
             Log.i("PhotoTracer", "쉬기: $why")
             if (why != "사용 중") rests++
             val until = System.currentTimeMillis() + (if (why == "사용 중") 30_000L else REST_MS)
-            while (System.currentTimeMillis() < until) {
-                halt()?.let { return it }
-                Thread.sleep(5_000)
+            restWhy = why; restUntil = until; resting(why)
+            try {
+                while (System.currentTimeMillis() < until) {
+                    halt()?.let { return it }
+                    Thread.sleep(5_000)
+                }
+            } finally {
+                restWhy = null; resting(null)
             }
             if (why == "속도 저하") vecMs.subList(maxOf(10, vecMs.size - 10), vecMs.size).clear() // 쉰 뒤 새로 잰다
         }
