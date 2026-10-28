@@ -14,12 +14,13 @@ import java.nio.ByteOrder
  *   vectors  SigLIP 사진 벡터(768). 대표 사진과 구간 밖 사진만
  *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 자동 묶음 번호(고를 때 참고), manual: 묶음에서 뺀 얼굴
  *            who/who_sim: 등록한 인물로 찾음(정답 얼굴과 최대 유사도), maybe: 확인이 필요한 인물
+ *            sharp: 얼굴 조각의 선명도(대표 얼굴 고를 때 계산해 둔다, Who.sharpness)
  *   people     등록한 인물: 이름(또는 호칭), 관계, 생년(사진 속 나이 계산). 폰 밖으로 나가지 않는다
  *   face_marks 사용자 표시: 얼굴이 그 인물의 정답(ok=1)인지 아닌지(ok=0). person=-1(Who.NOBODY): 아무에게도 붙이지 않음
  *   segments 구간 시작·끝·장 수 (스캔할 때마다 다시 만든다)
  *   runs     밤 작업 기록 (언제, 몇 장, 장당 시간, 쉼, 온도, 왜 멈췄나)
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 7) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 8) {
     companion object {
         @Volatile private var instance: Db? = null
         fun get(ctx: Context): Db = instance ?: synchronized(this) {
@@ -52,7 +53,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             fake INTEGER, fake_cap REAL, fake_person REAL)""")
         db.execSQL("CREATE TABLE vectors (photo_id INTEGER PRIMARY KEY, v BLOB NOT NULL)")
         db.execSQL("""CREATE TABLE faces (id INTEGER PRIMARY KEY AUTOINCREMENT, photo_id INTEGER NOT NULL,
-            x REAL, y REAL, w REAL, h REAL, v BLOB NOT NULL, person INTEGER, manual INTEGER NOT NULL DEFAULT 0)""")
+            x REAL, y REAL, w REAL, h REAL, v BLOB NOT NULL, person INTEGER, manual INTEGER NOT NULL DEFAULT 0, sharp REAL)""")
         createPeople(db)
         db.execSQL("CREATE TABLE segments (id INTEGER PRIMARY KEY, start INTEGER, end INTEGER, n INTEGER)")
         db.execSQL("""CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT, start INTEGER, last INTEGER,
@@ -83,6 +84,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             db.execSQL("ALTER TABLE photos ADD COLUMN fake_cap REAL")
             db.execSQL("ALTER TABLE photos ADD COLUMN fake_person REAL")
         }
+        if (old < 8) db.execSQL("ALTER TABLE faces ADD COLUMN sharp REAL")
     }
 
     private fun createPeople(db: SQLiteDatabase) {

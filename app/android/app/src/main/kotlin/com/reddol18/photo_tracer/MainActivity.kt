@@ -5,7 +5,6 @@ import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -118,7 +117,7 @@ class MainActivity : FlutterActivity() {
                 "whoRejectAll" ->bg { Who(this).rejectAll(call.argument<Number>("photo")!!.toLong()) }
                 "whoMerge" ->bg { Who(this).merge(longs(call.argument("ids"))) }
                 "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
-                "faceThumb" -> bg(thumbs) { faceThumb(db, call.argument<Number>("id")!!.toLong()) }
+                "faceThumb" -> bg(thumbs) { faceThumb(call.argument<Number>("id")!!.toLong()) }
                 "photoInfo" -> bg {
                     val id = call.argument<Number>("id").toString()
                     // 얼굴 위치(사진 대비 0~1)와 묶인 인물 — 사진 위에 상자로 그린다
@@ -223,23 +222,7 @@ class MainActivity : FlutterActivity() {
         return jpeg(bmp)
     }
 
-    private fun faceThumb(db: Db, faceId: Long): ByteArray? {
-        val f = db.readableDatabase.rawQuery("SELECT photo_id, x, y, w, h FROM faces WHERE id = ?", arrayOf(faceId.toString())).use {
-            if (!it.moveToFirst()) return null
-            listOf(it.getDouble(0), it.getDouble(1), it.getDouble(2), it.getDouble(3), it.getDouble(4))
-        }
-        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, f[0].toLong())
-        val bmp = contentResolver.loadThumbnail(uri, Size(768, 768), null)
-        // 얼굴 상자에 여백 30%
-        val cx = (f[1] + f[3] / 2) * bmp.width; val cy = (f[2] + f[4] / 2) * bmp.height
-        val half = maxOf(f[3] * bmp.width, f[4] * bmp.height) * 0.65
-        val r = Rect((cx - half).toInt().coerceAtLeast(0), (cy - half).toInt().coerceAtLeast(0),
-                     (cx + half).toInt().coerceAtMost(bmp.width), (cy + half).toInt().coerceAtMost(bmp.height))
-        if (r.width() < 2 || r.height() < 2) return jpeg(bmp)
-        val crop = Bitmap.createBitmap(bmp, r.left, r.top, r.width(), r.height())
-        bmp.recycle()
-        return jpeg(Bitmap.createScaledBitmap(crop, 160, 160, true))
-    }
+    private fun faceThumb(faceId: Long): ByteArray? = Who(this).faceBitmap(faceId, 160)?.let { jpeg(it) }
 
     private fun jpeg(bmp: Bitmap): ByteArray =
         ByteArrayOutputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it); bmp.recycle(); it.toByteArray() }

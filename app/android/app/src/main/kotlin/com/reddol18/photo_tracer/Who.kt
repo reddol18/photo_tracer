@@ -1,8 +1,13 @@
 package com.reddol18.photo_tracer
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.provider.MediaStore
 import android.util.Log
+import android.util.Size
 
 /**
  * 등록한 인물. 사용자가 사람마다 '정답 얼굴'을 몇 개 고르면, 나머지 얼굴은 정답 얼굴과의 최대 코사인 유사도로 찾는다.
@@ -20,6 +25,11 @@ class Who(private val ctx: Context) {
         const val MAYBE = 0.35f
         const val NOBODY = -1L // face_marks.person: '아무도 아님'으로 뺀 얼굴
         const val RULE = 6 // 붙이는 규칙이 바뀌면 올린다 → 앱을 열 때 한 번 다시 붙인다 (2: 사진당 한 얼굴, 캡처 제외, 3·4: 실사 아닌 이미지 제외)
+        const val FACE_MAX = 2048 // 얼굴 조각을 자를 때 사진을 읽는 최대 크기
+        private const val COVER_CANDS = 5 // 대표 얼굴: 크게 담기는 정답 얼굴 몇 개 중에서 선명도로 고른다
+
+        // 얼굴 썸네일에 실제로 담기는 픽셀 수: 얼굴 면적 × 사진 면적, 단 FACE_MAX보다 크게는 읽지 않는다
+        private val CROP_PX = "f.w * f.h * MIN(ph.w * ph.h, $FACE_MAX.0 * $FACE_MAX * ph.w * ph.h / (MAX(ph.w, ph.h) * MAX(ph.w, ph.h)))"
     }
 
     private val db = Db.get(ctx)
@@ -28,14 +38,63 @@ class Who(private val ctx: Context) {
         val out = ArrayList<Map<String, Any?>>()
         db.readableDatabase.rawQuery("""SELECT p.id, p.name, p.relation, p.birth_year,
                 (SELECT COUNT(DISTINCT photo_id) FROM faces WHERE who = p.id),
-                (SELECT COUNT(*) FROM face_marks WHERE person = p.id AND ok = 1),
-                (SELECT face_id FROM face_marks WHERE person = p.id AND ok = 1 LIMIT 1)
+                (SELECT COUNT(*) FROM face_marks WHERE person = p.id AND ok = 1)
                 FROM people p ORDER BY p.id""", null).use {
             while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "name" to it.getString(1), "relation" to it.getString(2),
                 "birth_year" to (if (it.isNull(3)) null else it.getInt(3)), "n" to it.getInt(4),
-                "refs" to it.getInt(5), "face" to (if (it.isNull(6)) null else it.getLong(6))))
+                "refs" to it.getInt(5), "face" to cover(it.getLong(0))))
         }
         return out
+    }
+
+    /** 대표 얼굴: 정답 얼굴 중 크게 담기는 몇 개를 고르고(실사 아닌 이미지는 뒤로), 그중 가장 선명한 것.
+     *  크기만 보면 흔들린 사진이 뽑힌다. 선명도는 한 번 재면 faces.sharp에 둔다 */
+    private fun cover(person: Long): Long? {
+        val cands = ArrayList<Pair<Long, Double?>>()
+        db.readableDatabase.rawQuery("""SELECT f.id, f.sharp FROM face_marks m JOIN faces f ON f.id = m.face_id JOIN photos ph ON ph.id = f.photo_id
+                WHERE m.person = ? AND m.ok = 1 ORDER BY COALESCE(ph.fake, 0) > 0, $CROP_PX DESC LIMIT $COVER_CANDS""",
+            arrayOf(person.toString())).use { while (it.moveToNext()) cands.add(it.getLong(0) to (if (it.isNull(1)) null else it.getDouble(1))) }
+        val t = System.currentTimeMillis()
+        var measured = 0
+        return cands.maxByOrNull { (id, s) ->
+            s ?: sharpness(id).also { v -> measured++; db.writableDatabase.execSQL("UPDATE faces SET sharp = ? WHERE id = ?", arrayOf<Any>(v, id)) }
+        }?.first.also { if (measured > 0) Log.i("Who", "대표 얼굴 $person: 선명도 ${measured}개 ${System.currentTimeMillis() - t}ms") }
+    }
+
+    /** 얼굴 조각(여백 30%)을 사진에서 잘라 out×out으로. 작은 얼굴은 사진을 크게 읽는다(최대 FACE_MAX) */
+    fun faceBitmap(faceId: Long, out: Int): Bitmap? {
+        val f = db.readableDatabase.rawQuery("SELECT photo_id, x, y, w, h FROM faces WHERE id = ?", arrayOf(faceId.toString())).use {
+            if (!it.moveToFirst()) return null
+            listOf(it.getDouble(0), it.getDouble(1), it.getDouble(2), it.getDouble(3), it.getDouble(4))
+        }
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, f[0].toLong())
+        // 768로 읽으면 작은 얼굴은 잘라낸 조각이 몇십 픽셀뿐이라 흐리다 → 얼굴 조각이 200픽셀쯤 되게 읽는다
+        val side = (200 / (maxOf(f[3], f[4]) * 1.3)).toInt().coerceIn(768, FACE_MAX)
+        val bmp = ctx.contentResolver.loadThumbnail(uri, Size(side, side), null)
+        val cx = (f[1] + f[3] / 2) * bmp.width; val cy = (f[2] + f[4] / 2) * bmp.height
+        val half = maxOf(f[3] * bmp.width, f[4] * bmp.height) * 0.65
+        val r = Rect((cx - half).toInt().coerceAtLeast(0), (cy - half).toInt().coerceAtLeast(0),
+                     (cx + half).toInt().coerceAtMost(bmp.width), (cy + half).toInt().coerceAtMost(bmp.height))
+        if (r.width() < 2 || r.height() < 2) return Bitmap.createScaledBitmap(bmp, out, out, true)
+        val crop = Bitmap.createBitmap(bmp, r.left, r.top, r.width(), r.height())
+        bmp.recycle()
+        return Bitmap.createScaledBitmap(crop, out, out, true).also { if (it !== crop) crop.recycle() }
+    }
+
+    /** 선명도: 128×128 회색 얼굴 조각의 라플라시안 분산. 흔들리거나 작은 얼굴을 늘린 조각은 낮다 */
+    private fun sharpness(faceId: Long): Double {
+        val bmp = try { faceBitmap(faceId, 128) } catch (e: Exception) { Log.w("Who", "선명도 실패 $faceId: $e"); null } ?: return 0.0
+        val n = 128
+        val px = IntArray(n * n).also { bmp.getPixels(it, 0, n, 0, 0, n, n) }
+        bmp.recycle()
+        val g = DoubleArray(px.size) { val c = px[it]; 0.299 * (c shr 16 and 255) + 0.587 * (c shr 8 and 255) + 0.114 * (c and 255) }
+        var sum = 0.0; var sq = 0.0; var k = 0
+        for (y in 1 until n - 1) for (x in 1 until n - 1) {
+            val i = y * n + x
+            val l = g[i - 1] + g[i + 1] + g[i - n] + g[i + n] - 4 * g[i]
+            sum += l; sq += l * l; k++
+        }
+        return sq / k - (sum / k) * (sum / k)
     }
 
     private fun info(name: String, relation: String?, birthYear: Int?) = ContentValues().apply {
