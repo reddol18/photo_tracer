@@ -36,8 +36,10 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
         }
 
         /** 구간 밖(찍은 날을 모르거나 화면 캡처) 사진과 대표 사진만 장면 벡터를 만든다.
-         *  카메라 정보 없는 사진도 — 실사 아닌 이미지 판정(Fake)에 쓴다 */
-        const val NEEDS_VECTOR = "(p.segment IS NULL OR p.is_rep = 1 OR p.date_source != '카메라')"
+         *  카메라 정보 없는 사진도 — 실사 아닌 이미지 판정(Fake)에 쓴다.
+         *  등록한 인물을 찾은 사진도 — "딸 바다"를 구간 대표가 아니라 그 사진의 장면으로 겨룬다(Search.searchPeople) */
+        const val NEEDS_VECTOR = """(p.segment IS NULL OR p.is_rep = 1 OR p.date_source != '카메라'
+            OR p.id IN (SELECT photo_id FROM faces WHERE who IS NOT NULL))"""
     }
 
     init {

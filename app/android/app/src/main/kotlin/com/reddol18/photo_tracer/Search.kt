@@ -31,6 +31,10 @@ class Search(private val ctx: Context) {
         private var bank: Bank? = null
         private var bankKey = -1
         private var common: FloatArray? = null
+        // 인물 낱말 뒤에 붙는 조사(긴 것부터 떼어 본다)와, 인물 검색에서 장면 검색어로 넘기지 않을 낱말
+        private val JOSA = listOf("이랑", "이하고", "이와", "이가", "이는", "이를", "이의", "이도", "이만", "에게", "한테", "하고",
+            "랑", "와", "과", "의", "은", "는", "이", "가", "을", "를", "도", "만").sortedByDescending { it.length }
+        private val FILLER = setOf("사진", "사진들", "같이", "함께", "나온", "있는", "찍은")
     }
 
     private fun common(): FloatArray = common ?: ctx.assets.open("search/common.bin").use { s ->
@@ -54,14 +58,12 @@ class Search(private val ctx: Context) {
     /** 결과: kind(segment|photo), id, cover(보여 줄 사진), n(장 수), date, date_source, score(코사인), conf(0~1). 흔한 방향을 뺀 점수 높은 순 */
     fun search(query: String): Map<String, Any?> {
         val t0 = System.nanoTime()
+        val (groups, words, rest) = people(query)
+        if (groups.isNotEmpty()) return searchPeople(groups, words, rest, t0)
         val q = vector(query)
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
-        val c = common()
-        var qc = 0f; for (d in q.indices) qc += q[d] * c[d]
-        val qd = FloatArray(q.size) { q[it] - qc * c[it] }
-        val raw = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * q[d]; s }
-        val scores = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * qd[d]; s } // 순위용(크기 무관)
+        val (raw, scores) = score(b, q)
         // 점수 높은 사진부터 훑으며, 구간은 처음 나온(= 가장 닮은) 사진으로 한 번만 넣는다
         val seen = HashSet<Long>()
         val items = ArrayList<Map<String, Any?>>()
@@ -73,6 +75,95 @@ class Search(private val ctx: Context) {
         }
         return mapOf("items" to items, "query_ms" to tq, "total_ms" to (System.nanoTime() - t0) / 1e6,
                      "candidates" to b.segs.filterNotNull().toSet().size + b.segs.count { it == null })
+    }
+
+    /** 사진 벡터마다 (코사인, 흔한 방향을 뺀 순위용 점수) */
+    private fun score(b: Bank, q: FloatArray): Pair<List<Float>, List<Float>> {
+        val c = common()
+        var qc = 0f; for (d in q.indices) qc += q[d] * c[d]
+        val qd = FloatArray(q.size) { q[it] - qc * c[it] }
+        val raw = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * q[d]; s }
+        val scores = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * qd[d]; s } // 순위용(크기 무관)
+        return raw to scores
+    }
+
+    /**
+     * 검색어 속 등록한 인물. 모델은 개인 이름을 모르니(이름으로 찾으면 화보·연예인 사진이 나왔다) 낱말을 인물 정보와 맞춘다.
+     * 이름, 세 글자 이름은 성을 뺀 것, 관계. 조사가 붙어도("딸이랑", "엄마와") 찾는다.
+     * 결과: 낱말마다 인물 id 묶음(관계가 같은 사람이 여럿이면 그중 누구든), 맞춘 낱말, 남은 검색어
+     */
+    private fun people(query: String): Triple<List<Set<Long>>, List<String>, String> {
+        val keys = HashMap<String, MutableSet<Long>>()
+        db.readableDatabase.rawQuery("SELECT id, name, relation FROM people", null).use {
+            while (it.moveToNext()) {
+                val name = it.getString(1).replace(" ", "")
+                listOfNotNull(name, if (name.length == 3) name.substring(1) else null, it.getString(2)?.replace(" ", ""))
+                    .filter { k -> k.isNotEmpty() }.forEach { k -> keys.getOrPut(k) { HashSet() }.add(it.getLong(0)) }
+            }
+        }
+        val groups = ArrayList<Set<Long>>(); val words = ArrayList<String>(); val rest = ArrayList<String>()
+        for (w in query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }) {
+            val k = (listOf(w) + JOSA.filter { w.length > it.length && w.endsWith(it) }.map { w.dropLast(it.length) })
+                .firstOrNull { it in keys }
+            if (k != null) { groups.add(keys[k]!!); words.add(k) } else if (w !in FILLER) rest.add(w)
+        }
+        return Triple(groups, words, rest.joinToString(" "))
+    }
+
+    /** 인물의 사진: 정답 + 찾음(실사 아닌 이미지는 빼고). '확인 필요'는 넣지 않는다 */
+    private fun photosOf(ids: Set<Long>): Set<Long> {
+        val list = ids.joinToString(",")
+        return db.readableDatabase.rawQuery("""SELECT f.photo_id FROM faces f JOIN photos p ON p.id = f.photo_id
+                WHERE f.who IN ($list) AND COALESCE(p.fake, 0) = 0
+                UNION SELECT f.photo_id FROM face_marks m JOIN faces f ON f.id = m.face_id WHERE m.ok = 1 AND m.person IN ($list)""", null)
+            .use { c -> HashSet<Long>().also { while (c.moveToNext()) it.add(c.getLong(0)) } }
+    }
+
+    /**
+     * 인물이 든 검색: 인물 사진만 후보로(여러 인물이면 모두 나온 사진). 구간은 그 안의 인물 사진끼리 묶어 한 칸으로.
+     * 남은 낱말이 있으면("딸 바다") 그 구간·사진의 장면 점수로 순위를 매기고, 없으면 최근 순.
+     * 장면 벡터는 구간 대표와 구간 밖 사진에만 있어서, 구간은 구간의 점수로 겨룬다(일반 검색과 같다).
+     * 결과 칸에 ids(그 칸의 인물 사진)를 넣어, 누르면 구간 전체가 아니라 인물 사진만 보인다.
+     */
+    private fun searchPeople(groups: List<Set<Long>>, words: List<String>, rest: String, t0: Long): Map<String, Any?> {
+        val ids = groups.map { photosOf(it) }.reduce { a, b -> a intersect b }
+        class Row(val id: Long, val seg: Long?, val date: Long?, val received: Long?, val source: String)
+        val rows = ArrayList<Row>()
+        if (ids.isNotEmpty()) db.readableDatabase.rawQuery("""SELECT id, segment, taken_at, received_at, date_source FROM photos
+                WHERE id IN (${ids.joinToString(",")}) ORDER BY taken_at DESC, received_at DESC""", null).use {
+            val n = { i: Int -> if (it.isNull(i)) null else it.getLong(i) }
+            while (it.moveToNext()) rows.add(Row(it.getLong(0), n(1), n(2), n(3), it.getString(4)))
+        }
+        var tq = 0.0
+        val segScore = HashMap<Long, Float>(); val photoScore = HashMap<Long, Float>() // 순위용
+        val segRaw = HashMap<Long, Float>(); val photoRaw = HashMap<Long, Float>()
+        if (rest.isNotEmpty()) {
+            val q = vector(rest)
+            tq = (System.nanoTime() - t0) / 1e6
+            val b = bank()
+            val (raw, scores) = score(b, q)
+            for (i in scores.indices) {
+                photoScore[b.photos[i]] = scores[i]; photoRaw[b.photos[i]] = raw[i]
+                val seg = b.segs[i] ?: continue
+                if (scores[i] > (segScore[seg] ?: Float.NEGATIVE_INFINITY)) { segScore[seg] = scores[i]; segRaw[seg] = raw[i] }
+            }
+        }
+        // 구간은 한 칸으로, 구간 밖 사진은 한 장씩. rows가 최근 순이라 칸도 최근 순.
+        // 점수: 칸 안 인물 사진의 장면 벡터 중 가장 높은 것(표지도 그 사진). 아직 벡터가 없으면(밤 작업 전) 구간 대표의 점수
+        val cells = LinkedHashMap<String, MutableList<Row>>()
+        for (r in rows) cells.getOrPut(if (r.seg != null) "s${r.seg}" else "p${r.id}") { ArrayList() }.add(r)
+        val items = cells.values.map { rs ->
+            val best = rs.filter { it.id in photoScore }.maxByOrNull { photoScore[it.id]!! }
+            val r = best ?: rs.first(); val seg = r.seg
+            val rank = if (best != null) photoScore[best.id] else seg?.let { segScore[it] }
+            val raw = if (best != null) photoRaw[best.id] else seg?.let { segRaw[it] }
+            rank to mapOf("kind" to (if (seg != null) "segment" else "photo"), "id" to (seg ?: r.id), "cover" to r.id, "n" to rs.size,
+                "ids" to rs.map { it.id }.reversed(), "date" to r.date, "received" to r.received, "date_source" to r.source,
+                "score" to raw?.toDouble(), "conf" to raw?.let { conf(it) })
+        }
+        val sorted = if (rest.isEmpty()) items else items.sortedByDescending { it.first ?: Float.NEGATIVE_INFINITY } // 점수 없는 칸은 뒤로, 그 안은 최근 순
+        return mapOf("items" to sorted.map { it.second }, "query_ms" to tq, "total_ms" to (System.nanoTime() - t0) / 1e6,
+                     "candidates" to items.size, "who" to words.joinToString(" · "), "photos" to rows.size, "rest" to rest)
     }
 
     private fun conf(score: Float) = 1.0 / (1.0 + kotlin.math.exp(-(LOGIT_SCALE * score + LOGIT_BIAS).toDouble()))

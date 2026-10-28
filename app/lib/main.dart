@@ -293,10 +293,15 @@ class _SearchPageState extends State<SearchPage> {
     try {
       final r = Map<String, dynamic>.from(await channel.invokeMethod('search', {'q': q}));
       final list = (r['items'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
+      final rest = r['rest'] as String? ?? '';
       setState(() {
         items = list;
-        info = '후보 ${fmtInt(r['candidates'])}개 중 잘 맞는 순 ${list.length}개 · 검색어 처리 ${(r['query_ms'] as num).round()}ms'
-            ' · 전체 ${(r['total_ms'] as num).round()}ms';
+        // 등록한 인물이 든 검색어: 그 인물 사진만, 남은 낱말이 있으면 그 장면 순, 없으면 최근 순
+        info = r['who'] != null
+            ? '${r['who']} 사진 ${fmtInt(r['photos'])}장 · ${list.length}칸 ${rest.isEmpty ? '최근 순' : '"$rest" 잘 맞는 순'}'
+                ' · 전체 ${(r['total_ms'] as num).round()}ms'
+            : '후보 ${fmtInt(r['candidates'])}개 중 잘 맞는 순 ${list.length}개 · 검색어 처리 ${(r['query_ms'] as num).round()}ms'
+                ' · 전체 ${(r['total_ms'] as num).round()}ms';
       });
     } catch (e) {
       setState(() => info = '$e');
@@ -334,9 +339,10 @@ class _SearchPageState extends State<SearchPage> {
               final label = it['date'] != null ? fmtDate(it['date'] as int) : (it['received'] != null ? '받은 날 ${fmtDate(it['received'] as int)}' : '날짜 모름');              return GestureDetector(
                 onTap: () {
                   if (it['kind'] == 'segment') {
+                    final ids = it['ids']; // 인물 검색: 구간 안의 그 인물 사진만
                     Navigator.push(context, MaterialPageRoute(
                         builder: (_) => PhotosPage(title: '${fmtDate(it['date'] as int)} · ${it['n']}장',
-                            load: () => channel.invokeMethod('segmentPhotos', {'id': it['id']}))));
+                            load: () async => ids ?? await channel.invokeMethod('segmentPhotos', {'id': it['id']}))));
                   } else {
                     showPhoto(context, it['cover'] as int);
                   }
