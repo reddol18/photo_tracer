@@ -11,6 +11,7 @@ import java.nio.ByteOrder
  *   photos   갤러리 사진. taken_at+date_source(찍은 날과 그 근거), received_at(받은 날, 대량 이동한 날은 비움)
  *            segment: 시간 구간 번호(찍은 날을 아는 사진만), is_rep: 구간 대표 사진
  *            fake: 실사 아닌 이미지(1 화면 캡처, 2 만든 이미지, 0 실사, NULL 아직) — Fake.kt, fake_cap/fake_person: 그 점수
+ *            face_ver: 얼굴 벡터를 만든 방식(Models.FACE_VER보다 낮으면 밤 작업이 다시 만든다)
  *   vectors  SigLIP 사진 벡터(768). 대표 사진과 구간 밖 사진만
  *   faces    얼굴 위치(사진 대비 0~1)와 SFace 벡터(128), person: 자동 묶음 번호(고를 때 참고), manual: 묶음에서 뺀 얼굴
  *            who/who_sim: 등록한 인물로 찾음(정답 얼굴과 최대 유사도), maybe: 확인이 필요한 인물
@@ -20,7 +21,7 @@ import java.nio.ByteOrder
  *   segments 구간 시작·끝·장 수 (스캔할 때마다 다시 만든다)
  *   runs     밤 작업 기록 (언제, 몇 장, 장당 시간, 쉼, 온도, 왜 멈췄나)
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 8) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer.db", null, 9) {
     companion object {
         @Volatile private var instance: Db? = null
         fun get(ctx: Context): Db = instance ?: synchronized(this) {
@@ -52,7 +53,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             taken_at INTEGER, date_source TEXT NOT NULL, received_at INTEGER, lat REAL, lon REAL,
             segment INTEGER, is_rep INTEGER NOT NULL DEFAULT 0,
             faces_done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
-            fake INTEGER, fake_cap REAL, fake_person REAL)""")
+            fake INTEGER, fake_cap REAL, fake_person REAL, face_ver INTEGER NOT NULL DEFAULT 0)""")
         db.execSQL("CREATE TABLE vectors (photo_id INTEGER PRIMARY KEY, v BLOB NOT NULL)")
         db.execSQL("""CREATE TABLE faces (id INTEGER PRIMARY KEY AUTOINCREMENT, photo_id INTEGER NOT NULL,
             x REAL, y REAL, w REAL, h REAL, v BLOB NOT NULL, person INTEGER, manual INTEGER NOT NULL DEFAULT 0, sharp REAL)""")
@@ -87,6 +88,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "photo_tracer
             db.execSQL("ALTER TABLE photos ADD COLUMN fake_person REAL")
         }
         if (old < 8) db.execSQL("ALTER TABLE faces ADD COLUMN sharp REAL")
+        if (old < 9) db.execSQL("ALTER TABLE photos ADD COLUMN face_ver INTEGER NOT NULL DEFAULT 0")
     }
 
     private fun createPeople(db: SQLiteDatabase) {

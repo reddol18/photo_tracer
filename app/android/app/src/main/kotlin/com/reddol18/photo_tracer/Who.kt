@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
+import java.io.File
 
 /**
  * 등록한 인물. 사용자가 사람마다 '정답 얼굴'을 몇 개 고르면, 나머지 얼굴은 정답 얼굴과의 최대 코사인 유사도로 찾는다.
@@ -279,6 +280,59 @@ class Who(private val ctx: Context) {
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
         Log.i("PhotoTracer", "인물 ${people.size}명 다시 붙임, ${System.currentTimeMillis() - t0}ms")
+        try { exportFound() } catch (e: Exception) { Log.w("PhotoTracer", "who_found.csv 실패: $e") }
+    }
+
+    /**
+     * 점검용: '찾음' 얼굴마다 가장 닮은 정답 얼굴과 사진 출처·실사 판정을 앱 폴더 who_found.csv로(이름·사진은 안 쓴다, 인물은 번호).
+     * 연예인·AI 그림이 왜 붙었나(판정을 빠져나갔나, 어느 정답과 닮았나)를 PC에서 썸네일과 맞춰 본다(poc/who_found.py).
+     */
+    private fun exportFound() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val refs = HashMap<Long, ArrayList<Triple<Long, Long, FloatArray>>>() // 인물 → (정답 얼굴, 사진, 벡터)
+        db.readableDatabase.rawQuery("""SELECT m.person, f.id, f.photo_id, f.v FROM face_marks m JOIN faces f ON f.id = m.face_id
+                WHERE m.ok = 1""", null).use {
+            while (it.moveToNext()) refs.getOrPut(it.getLong(0)) { ArrayList() }.add(Triple(it.getLong(1), it.getLong(2), Db.floats(it.getBlob(3))))
+        }
+        // 정답 얼굴마다: 다른 인물의 정답 얼굴과 가장 닮은 정도. 가리거나 작은 얼굴은 벡터가 흐려 아무 얼굴과도 닮는다
+        File(dir, "who_refs.csv").bufferedWriter().use { out ->
+            out.write("ref_face,photo,person,other_max,other_person,other_face\n")
+            for ((p, rs) in refs) for ((face, photo, v) in rs) {
+                var best = -2f; var bp = 0L; var bf = 0L
+                for ((q, qs) in refs) if (q != p) for ((qf, _, qv) in qs) { val s = dot(v, qv); if (s > best) { best = s; bp = q; bf = qf } }
+                out.write("$face,$photo,$p,$best,$bp,$bf\n")
+            }
+        }
+        // 정답 얼굴끼리: 같은 사람 / 다른 사람 유사도 분포 (PC 0단계: 같은 사람 중앙값 0.52, 다른 사람 0.13, 95% 0.40)
+        val same = ArrayList<Float>(); val diff = ArrayList<Float>(); val diffSamePhoto = ArrayList<Float>()
+        val all = refs.flatMap { (p, rs) -> rs.map { p to it } }
+        for (i in all.indices) for (j in i + 1 until all.size) {
+            val s = dot(all[i].second.third, all[j].second.third)
+            when {
+                all[i].first == all[j].first -> same.add(s)
+                all[i].second.second == all[j].second.second -> diffSamePhoto.add(s)
+                else -> diff.add(s)
+            }
+        }
+        val q = { l: List<Float>, f: Double -> l.sorted().let { if (it.isEmpty()) Float.NaN else it[((it.size - 1) * f).toInt()] } }
+        Log.i("PhotoTracer", "정답 얼굴 유사도: 같은 사람 ${same.size}쌍 중앙 ${q(same, .5)} / 다른 사람 ${diff.size}쌍 중앙 ${q(diff, .5)} 95% ${q(diff, .95)}" +
+            " / 같은 사진 다른 사람 ${diffSamePhoto.size}쌍 중앙 ${q(diffSamePhoto, .5)}")
+        File(dir, "who_found.csv").bufferedWriter().use { out ->
+            out.write("face,photo,person,sim,ref_face,ref_photo,date_source,mime,dir,vec,fake,cap,pscore,x,y,w,h\n")
+            db.readableDatabase.rawQuery("""SELECT f.id, f.photo_id, f.who, f.who_sim, f.v, p.date_source, p.mime, p.path,
+                    v.photo_id IS NOT NULL, p.fake, p.fake_cap, p.fake_person, f.x, f.y, f.w, f.h
+                    FROM faces f JOIN photos p ON p.id = f.photo_id LEFT JOIN vectors v ON v.photo_id = p.id
+                    WHERE f.who IS NOT NULL AND f.id NOT IN (SELECT face_id FROM face_marks WHERE ok = 1)""", null).use {
+                val s = { i: Int -> if (it.isNull(i)) "" else it.getString(i) }
+                while (it.moveToNext()) {
+                    val v = Db.floats(it.getBlob(4))
+                    val ref = refs[it.getLong(2)]?.maxByOrNull { r -> dot(v, r.third) }
+                    val folder = s(7).substringBeforeLast('/', "").replace(",", " ")
+                    out.write(listOf(s(0), s(1), s(2), s(3), ref?.first ?: "", ref?.second ?: "", s(5), s(6), folder, s(8), s(9), s(10), s(11),
+                        s(12), s(13), s(14), s(15)).joinToString(",") + "\n")
+                }
+            }
+        }
     }
 
     private fun dot(a: FloatArray, b: FloatArray): Float { var s = 0f; for (d in a.indices) s += a[d] * b[d]; return s }

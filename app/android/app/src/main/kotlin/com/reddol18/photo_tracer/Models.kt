@@ -34,6 +34,7 @@ class Models(private val ctx: Context) {
         const val VISION = "vision_384_w8.onnx"
         const val TEXT = "text_w8.onnx"
         const val SFACE = "face_recognition_sface_2021dec.onnx"
+        const val FACE_VER = 2 // 얼굴 벡터 만드는 방식이 바뀌면 올린다 → 밤 작업이 얼굴 벡터를 다시 만든다 (2: 랜드마크 좌우)
         const val DETECT_LONG_SIDE = 1280 // PC 평가(extract_faces.py)와 같은 축소 크기
         const val MAX_FACES = 10
         const val MIN_FACE_PX = 32 // 이보다 작은 얼굴은 벡터가 흐려 묶음을 망친다
@@ -118,7 +119,7 @@ class Models(private val ctx: Context) {
 
     /** SFace: 정렬한 112x112 얼굴, RGB 0~255, NCHW (OpenCV FaceRecognizerSF 와 같은 입력). 출력을 정규화해 준다 */
     fun embedFace(s: OrtSession, bmp: Bitmap, face: Face): FloatArray {
-        val crop = align(bmp, face)
+        val crop = align(bmp, face).first
         val px = IntArray(112 * 112)
         crop.getPixels(px, 0, 112, 0, 0, 112, 112)
         crop.recycle()
@@ -147,12 +148,14 @@ class Models(private val ctx: Context) {
     }
 
     /**
-     * ML Kit 랜드마크 5점을 SFace 기준점에 맞추는 닮음 변환으로 112x112 얼굴을 잘라낸다.
-     * ML Kit의 LEFT/RIGHT는 '사람 기준'이라 이미지 왼쪽 눈 = RIGHT_EYE 다. 점이 모자라면 상자만 잘라 쓴다.
+     * ML Kit 랜드마크 5점을 SFace 기준점에 맞추는 닮음 변환으로 112x112 얼굴을 잘라낸다. 점이 모자라면 상자만 잘라 쓴다.
+     * ML Kit의 LEFT_EYE·MOUTH_LEFT는 이미지 왼쪽에 있다(폰에서 좌표로 확인). 처음엔 '사람 기준'으로 알고 거꾸로 맞춰서
+     * 닮음 변환이 좌우 뒤집힌 점들에 맞추느라 얼굴이 작게 기울어진 채 장면이 들어갔고, 같은 사람·다른 사람 유사도가 똑같았다
+     * (정답 얼굴끼리 중앙값 0.356 대 0.360). 고친 뒤 얼굴 벡터를 모두 다시 만든다(FACE_VER).
      */
-    private fun align(bmp: Bitmap, face: Face): Bitmap {
-        val types = intArrayOf(FaceLandmark.RIGHT_EYE, FaceLandmark.LEFT_EYE, FaceLandmark.NOSE_BASE,
-                               FaceLandmark.MOUTH_RIGHT, FaceLandmark.MOUTH_LEFT)
+    fun align(bmp: Bitmap, face: Face): Pair<Bitmap, Boolean> {
+        val types = intArrayOf(FaceLandmark.LEFT_EYE, FaceLandmark.RIGHT_EYE, FaceLandmark.NOSE_BASE,
+                               FaceLandmark.MOUTH_LEFT, FaceLandmark.MOUTH_RIGHT)
         val src = types.map { face.getLandmark(it)?.position }
         val out = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
         val m = Matrix()
@@ -176,6 +179,6 @@ class Models(private val ctx: Context) {
             m.setRectToRect(RectF(face.boundingBox), RectF(0f, 0f, 112f, 112f), Matrix.ScaleToFit.FILL)
         }
         Canvas(out).drawBitmap(bmp, m, Paint(Paint.FILTER_BITMAP_FLAG))
-        return out
+        return out to src.all { it != null } // 두 번째: 랜드마크 5점으로 정렬했나(아니면 상자만)
     }
 }

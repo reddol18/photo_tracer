@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -28,6 +29,9 @@ class Indexer(
         const val TEMP_LIMIT = 42.0
         const val SLOW = 1.8
         const val USER_STOP = "사용자가 멈춤"
+        // 얼굴이 있는데 벡터가 옛 방식인 사진 (얼굴 없는 사진은 다시 볼 것이 없다)
+        private val OLD_FACES = "(p.faces_done = 1 AND p.face_ver < ${Models.FACE_VER} AND EXISTS (SELECT 1 FROM faces WHERE photo_id = p.id))"
+        private const val SAME_FACE_IOU = 0.5f
         private val running = AtomicBoolean(false)
         private val userStop = AtomicBoolean(false)
         fun isRunning() = running.get()
@@ -49,7 +53,9 @@ class Indexer(
     private var faces = 0
     private var vectors = 0
 
-    private class Job(val id: Long, val faces: Boolean, val vector: Boolean)
+    /** reembed: 얼굴은 찾아 두었지만 벡터가 옛 방식(face_ver < FACE_VER) — 얼굴 줄(정답 표시)은 두고 벡터만 바꾼다 */
+    private class Job(val id: Long, val faces: Boolean, val vector: Boolean, val reembed: Boolean)
+    private var reembedded = 0
 
     /** 반환: 멈춘 이유 */
     fun run(note: String): String {
@@ -62,6 +68,8 @@ class Indexer(
         var stop = "오류"
         try {
             stop = loop()
+            // 얼굴 벡터를 다시 만들었으면 묶음 중심도 옛 벡터라 처음부터 다시 묶는다
+            if (reembedded > 0 && stop == "완료") People(ctx).full()
             if (stop == "완료") { People(ctx).cluster(); Who(ctx).assignAll() }
         } catch (e: Throwable) {
             Log.e("PhotoTracer", "밤 작업 오류", e)
@@ -85,16 +93,47 @@ class Indexer(
     private fun pending(): List<Job> {
         val jobs = ArrayList<Job>()
         db.readableDatabase.rawQuery("""
-            SELECT p.id, p.faces_done = 0, ${Db.NEEDS_VECTOR} AND v.photo_id IS NULL
+            SELECT p.id, p.faces_done = 0, ${Db.NEEDS_VECTOR} AND v.photo_id IS NULL, $OLD_FACES
             FROM photos p LEFT JOIN vectors v ON v.photo_id = p.id
-            WHERE p.failed = 0 AND (p.faces_done = 0 OR (${Db.NEEDS_VECTOR} AND v.photo_id IS NULL))
+            WHERE p.failed = 0 AND (p.faces_done = 0 OR (${Db.NEEDS_VECTOR} AND v.photo_id IS NULL) OR $OLD_FACES)
             ORDER BY p.segment IS NULL, COALESCE(p.taken_at, p.received_at, 0) DESC""", null).use {
-            while (it.moveToNext()) jobs.add(Job(it.getLong(0), it.getInt(1) == 1, it.getInt(2) == 1))
+            while (it.moveToNext()) jobs.add(Job(it.getLong(0), it.getInt(1) == 1, it.getInt(2) == 1, it.getInt(3) == 1))
         }
         return jobs
     }
 
+    /**
+     * 개발용: 앱 폴더에 debug_crops.txt(줄마다 사진 id)를 adb로 넣으면 그 사진들의 SFace 입력(정렬한 112×112 얼굴)을
+     * debug_crops/<id>_<n>.png 로 쓰고 txt를 지운다. info.txt: 비트맵 형식, 랜드마크 5점이 다 있었나, 상자
+     */
+    private fun debugCrops() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val list = File(dir, "debug_crops.txt").takeIf { it.exists() } ?: return
+        val out = File(dir, "debug_crops").apply { mkdirs() }
+        val models = Models(ctx)
+        val detector = models.detector()
+        val info = StringBuilder()
+        try {
+            for (id in list.readLines().mapNotNull { it.trim().toLongOrNull() }) {
+                val bmp = models.decode(id) ?: continue
+                models.faces(detector, bmp).forEachIndexed { k, f ->
+                    val (crop, five) = models.align(bmp, f)
+                    File(out, "${id}_$k.png").outputStream().use { crop.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                    val lm = listOf(com.google.mlkit.vision.face.FaceLandmark.LEFT_EYE, com.google.mlkit.vision.face.FaceLandmark.RIGHT_EYE,
+                        com.google.mlkit.vision.face.FaceLandmark.NOSE_BASE, com.google.mlkit.vision.face.FaceLandmark.MOUTH_LEFT,
+                        com.google.mlkit.vision.face.FaceLandmark.MOUTH_RIGHT)
+                        .joinToString(" ") { t -> f.getLandmark(t)?.position?.let { "${it.x.toInt()}:${it.y.toInt()}" } ?: "-" }
+                    info.append("$id,$k,${bmp.config},${bmp.width}x${bmp.height},five=$five,box=${f.boundingBox},L_R_N_ML_MR=$lm\n")
+                }
+                bmp.recycle()
+            }
+        } finally { detector.close() }
+        File(out, "info.txt").writeText(info.toString())
+        list.delete()
+    }
+
     private fun loop(): String {
+        try { debugCrops() } catch (e: Exception) { Log.w("PhotoTracer", "debug_crops 실패: $e") }
         val jobs = pending()
         if (jobs.isEmpty()) return "완료"
         val models = Models(ctx)
@@ -125,6 +164,7 @@ class Indexer(
             return
         }
         try {
+            if (job.reembed && !job.faces) reembed(models, detector, sface, bmp, job) // 장면 벡터도 필요하면 아래에서 이어 만든다
             val rows = ArrayList<ContentValues>()
             if (job.faces) {
                 val t = System.nanoTime()
@@ -150,7 +190,7 @@ class Indexer(
                 if (job.faces) {
                     w.delete("faces", "photo_id = ?", arrayOf(job.id.toString()))
                     rows.forEach { w.insert("faces", null, it) }
-                    w.execSQL("UPDATE photos SET faces_done = 1 WHERE id = ?", arrayOf(job.id))
+                    w.execSQL("UPDATE photos SET faces_done = 1, face_ver = ? WHERE id = ?", arrayOf<Any>(Models.FACE_VER, job.id))
                 }
                 vec?.let { w.insertWithOnConflict("vectors", null, ContentValues().apply {
                     put("photo_id", job.id); put("v", Db.blob(it))
@@ -163,6 +203,50 @@ class Indexer(
         } finally {
             bmp.recycle()
         }
+    }
+
+    /**
+     * 얼굴 벡터만 다시 만든다. 같은 디코드·같은 검출이라 얼굴 상자가 그대로 나온다 → 저장된 얼굴과 상자 겹침(IoU)으로 짝지어
+     * 그 줄의 벡터만 바꾼다(얼굴 id가 그대로라 정답·아님 표시가 남는다). 짝 없는 옛 얼굴은 표시가 없으면 지우고, 새로 나온 얼굴은 넣는다.
+     */
+    private fun reembed(models: Models, detector: com.google.mlkit.vision.face.FaceDetector,
+                        sface: ai.onnxruntime.OrtSession, bmp: android.graphics.Bitmap, job: Job) {
+        val t = System.nanoTime()
+        class Old(val id: Long, val x: Double, val y: Double, val w: Double, val h: Double)
+        val old = ArrayList<Old>()
+        db.readableDatabase.rawQuery("SELECT id, x, y, w, h FROM faces WHERE photo_id = ?", arrayOf(job.id.toString())).use {
+            while (it.moveToNext()) old.add(Old(it.getLong(0), it.getDouble(1), it.getDouble(2), it.getDouble(3), it.getDouble(4)))
+        }
+        fun iou(o: Old, x: Double, y: Double, w: Double, h: Double): Double {
+            val ix = maxOf(0.0, minOf(o.x + o.w, x + w) - maxOf(o.x, x)); val iy = maxOf(0.0, minOf(o.y + o.h, y + h) - maxOf(o.y, y))
+            val i = ix * iy
+            return i / (o.w * o.h + w * h - i)
+        }
+        val wdb = db.writableDatabase
+        val left = old.toMutableList()
+        val updates = ArrayList<Pair<Long, ByteArray>>(); val inserts = ArrayList<ContentValues>()
+        for (f in models.faces(detector, bmp)) {
+            val b = f.boundingBox
+            val x = b.left.toDouble() / bmp.width; val y = b.top.toDouble() / bmp.height
+            val w = b.width().toDouble() / bmp.width; val h = b.height().toDouble() / bmp.height
+            val v = Db.blob(models.embedFace(sface, bmp, f))
+            val match = left.maxByOrNull { iou(it, x, y, w, h) }?.takeIf { iou(it, x, y, w, h) >= SAME_FACE_IOU }
+            if (match != null) { left.remove(match); updates.add(match.id to v) }
+            else inserts.add(ContentValues().apply {
+                put("photo_id", job.id); put("x", x); put("y", y); put("w", w); put("h", h); put("v", v)
+            })
+        }
+        faceMs.add(ms(t))
+        wdb.beginTransaction()
+        try {
+            for ((id, v) in updates) wdb.execSQL("UPDATE faces SET v = ? WHERE id = ?", arrayOf<Any>(v, id))
+            inserts.forEach { wdb.insert("faces", null, it) }
+            for (o in left) wdb.execSQL("DELETE FROM faces WHERE id = ? AND id NOT IN (SELECT face_id FROM face_marks)", arrayOf<Any>(o.id))
+            wdb.execSQL("UPDATE photos SET face_ver = ? WHERE id = ?", arrayOf<Any>(Models.FACE_VER, job.id))
+            wdb.setTransactionSuccessful()
+        } finally { wdb.endTransaction() }
+        if (left.isNotEmpty() || inserts.isNotEmpty()) Log.i("PhotoTracer", "얼굴 다시 만듦 ${job.id}: 그대로 ${updates.size}, 새로 ${inserts.size}, 짝 없음 ${left.size}")
+        faces += updates.size + inserts.size; reembedded++
     }
 
     /** 쉬어야 하면 쉬고 null, 멈춰야 하면 이유 */

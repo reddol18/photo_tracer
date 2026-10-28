@@ -39,7 +39,7 @@ class People(ctx: Context) {
         val t0 = System.currentTimeMillis()
         running = t0
         try {
-            val (ids, vecs) = load("1 = 1")
+            val (ids, vecs) = load("COALESCE(p.fake, 0) = 0") // 실사 아닌 이미지(Fake.kt) 속 얼굴은 묶지 않는다 — 다시 묶으면 빠진다
             if (vecs.isEmpty()) return
             val g = Groups(vecs[0].size)
             val label = IntArray(vecs.size) { g.add(vecs[it]) }
@@ -57,7 +57,7 @@ class People(ctx: Context) {
     /** 아직 묶이지 않은 얼굴(손으로 뺀 것 제외)을 기존 묶음 중심에 붙이고, 안 맞으면 새 번호로 묶는다 */
     fun assign() {
         val t0 = System.currentTimeMillis()
-        val (ids, vecs) = load("f.person IS NULL AND f.manual = 0")
+        val (ids, vecs) = load("f.person IS NULL AND f.manual = 0 AND COALESCE(p.fake, 0) = 0")
         if (vecs.isEmpty()) return
         val g = Groups(vecs[0].size)
         val persons = ArrayList<Int>()

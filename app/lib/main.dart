@@ -171,6 +171,29 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
         ),
       );
 
+  /// 일 하나의 막대: 끝남(흐린 회색, 꽉 참) · 하는 중(진한 색) · 기다림(옅은 색, 밤 작업이 아직 안 돔)
+  Widget taskBar(BuildContext context, String label, int done, int total, bool running, {String? note}) {
+    final cs = Theme.of(context).colorScheme;
+    final finished = total == 0 || done >= total;
+    final (state, color) = finished
+        ? ('끝남', cs.outline)
+        : running
+            ? ('하는 중', cs.primary)
+            : ('기다림', cs.primary.withValues(alpha: 0.35));
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Text('$label ${fmtInt(done)} / ${fmtInt(total)}장', style: TextStyle(fontWeight: finished ? null : FontWeight.bold))),
+          Text(state, style: TextStyle(color: finished ? cs.outline : cs.primary, fontSize: 12)),
+        ]),
+        const SizedBox(height: 4),
+        LinearProgressIndicator(value: total == 0 ? 1 : done / total, color: color, backgroundColor: color.withValues(alpha: 0.15)),
+        if (note != null) Text(note, style: Theme.of(context).textTheme.bodySmall),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final st = s;
@@ -179,8 +202,12 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
     final facesDone = st['faces_done'] as int;
     final vecNeeded = st['vec_needed'] as int;
     final vecDone = st['vec_done'] as int;
-    final total = photos + vecNeeded;
-    final done = facesDone + vecDone;
+    // 얼굴 비교 방식을 고쳐 얼굴 벡터를 다시 만드는 중이면(Models.FACE_VER) 그것도 진행에 넣는다
+    final refaceNeeded = st['reface_needed'] as int, refaceDone = st['reface_done'] as int;
+    final reface = refaceDone < refaceNeeded;
+    final failed = st['failed'] as int, running = st['running'] == true;
+    final total = photos - failed + vecNeeded + (reface ? refaceNeeded : 0);
+    final done = facesDone + vecDone + (reface ? refaceDone : 0);
     final vendor = vendorGuide('${st['manufacturer']}');
     return RefreshIndicator(
       onRefresh: () => refresh(scan: true),
@@ -233,19 +260,24 @@ class _SetupPageState extends State<SetupPage> with WidgetsBindingObserver {
               const SizedBox(height: 8),
               Text(st['scan_phase'] != null
                   ? scanText(st)
-                  : st['night_on'] == true
-                      ? '충전 중이고 화면이 꺼져 있을 때 조금씩 정리합니다. 처음에는 며칠 밤 걸릴 수 있습니다.'
-                      : '위 스위치를 켜거나 "지금 시작"을 누르면 정리합니다.'),
+                  : st['running'] == true
+                      ? '일마다 아래 막대로 보여 줍니다. 진한 막대가 지금 하고 있는 일입니다.'
+                      : st['night_on'] == true
+                          ? '충전 중이고 화면이 꺼져 있을 때 조금씩 정리합니다. 처음에는 며칠 밤 걸릴 수 있습니다.'
+                          : '위 스위치를 켜거나 "지금 시작"을 누르면 정리합니다.'),
               const SizedBox(height: 12),
-              LinearProgressIndicator(
-                  value: st['scan_phase'] != null
-                      ? ((st['scan_total'] as int) == 0 ? null : (st['scan_done'] as int) / (st['scan_total'] as int))
-                      : (total == 0 ? 0 : done / total)),
-              const SizedBox(height: 8),
+              if (st['scan_phase'] != null)
+                LinearProgressIndicator(
+                    value: (st['scan_total'] as int) == 0 ? null : (st['scan_done'] as int) / (st['scan_total'] as int)),
               Text('사진 ${fmtInt(photos)}장 · 시간 구간 ${fmtInt(st['segments'])}개'),
-              Text('얼굴 확인 ${fmtInt(facesDone)} / ${fmtInt(photos)}장 · 찾은 얼굴 ${fmtInt(st['faces'])}개 · 인물 ${st['persons']}명'),
-              Text('장면 분석 ${fmtInt(vecDone)} / ${fmtInt(vecNeeded)}장 (구간 대표 사진과 날짜 없는 사진)'),
-              if ((st['failed'] as int) > 0) Text('읽지 못한 사진 ${st['failed']}장'),
+              const SizedBox(height: 8),
+              // 일마다 막대 하나: 이미 끝난 일이 지금 끝난 것처럼 보이지 않게(전체 하나로 합치면 그랬다)
+              taskBar(context, '얼굴 확인', facesDone, photos - failed, running,
+                  note: '찾은 얼굴 ${fmtInt(st['faces'])}개 · 인물 ${st['persons']}명'),
+              taskBar(context, '장면 분석', vecDone, vecNeeded, running, note: '구간 대표 사진과 날짜 없는 사진'),
+              if (reface)
+                taskBar(context, '얼굴 다시 분석', refaceDone, refaceNeeded, running, note: '얼굴 비교 방식을 고쳐서, 정답 표시는 그대로'),
+              if (failed > 0) Text('읽지 못한 사진 $failed장'),
             ]),
           ),
         ),

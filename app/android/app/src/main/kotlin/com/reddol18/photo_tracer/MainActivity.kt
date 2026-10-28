@@ -178,9 +178,12 @@ class MainActivity : FlutterActivity() {
             "failed" to n("SELECT COUNT(*) FROM photos WHERE failed = 1"),
             "faces_done" to n("SELECT COUNT(*) FROM photos WHERE faces_done = 1"),
             "segments" to n("SELECT COUNT(*) FROM segments"),
-            "vec_needed" to n("SELECT COUNT(*) FROM photos p WHERE ${Db.NEEDS_VECTOR}"),
-            "vec_done" to n("SELECT COUNT(*) FROM photos p JOIN vectors v ON v.photo_id = p.id WHERE ${Db.NEEDS_VECTOR}"),
+            "vec_needed" to n("SELECT COUNT(*) FROM photos p WHERE p.failed = 0 AND ${Db.NEEDS_VECTOR}"),
+            "vec_done" to n("SELECT COUNT(*) FROM photos p JOIN vectors v ON v.photo_id = p.id WHERE p.failed = 0 AND ${Db.NEEDS_VECTOR}"),
             "faces" to n("SELECT COUNT(*) FROM faces"),
+            // 얼굴 벡터를 새 방식(Models.FACE_VER)으로 다시 만들어야 하는 사진(얼굴 있는 사진)과 끝낸 사진
+            "reface_needed" to n("SELECT COUNT(*) FROM photos p WHERE p.faces_done = 1 AND EXISTS (SELECT 1 FROM faces WHERE photo_id = p.id)"),
+            "reface_done" to n("SELECT COUNT(*) FROM photos p WHERE p.faces_done = 1 AND p.face_ver >= ${Models.FACE_VER} AND EXISTS (SELECT 1 FROM faces WHERE photo_id = p.id)"),
             "persons" to n("SELECT COUNT(*) FROM (SELECT person FROM faces WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW})"),
         )
     }
