@@ -13,7 +13,7 @@ import java.nio.ByteOrder
 /**
  * 자연어 검색. 검색어 → 토크나이저 → 텍스트 모델 → 768차원 벡터, 사진 벡터와 코사인으로 순위를 매긴다.
  * 구간은 그 안에서 가장 닮은 사진의 점수로 겨루고(표지도 그 사진), 구간 밖 사진(찍은 날 모름·화면 캡처)은 한 장씩 겨룬다.
- *   실사 아닌 이미지는 맨 뒤로(rank 참고).
+ *   실사 아닌 이미지는 맨 뒤로, 검색어는 문형 묶음으로(rank, templated 참고).
  *   예전에는 구간을 장면 벡터 평균(0단계 '대표 평균')으로 겨뤘는데, 평균은 점수가 낮아져 낱장 사진과 섞이면 순서가 어긋났다.
  * 흔한 검색어 방향 빼기: 앨범 대부분이 아이 사진이라 "바다에서 노는 아이"는 '바다'보다 '아이'에 끌린다.
  *   일상 문구 30개 평균(assets/search/common.bin, poc/app_assets.py common)을 검색어 벡터에서 빼고 순위를 매긴다.
@@ -24,6 +24,8 @@ import java.nio.ByteOrder
 class Search(private val ctx: Context) {
     companion object {
         const val TOP = 60
+        private const val POOL = 150 // debugEval: 방식별 상위 몇 칸을 후보로 내보낼지
+        const val SOFT_PERSON = 0f // 장면 검색에서 뒤로 미룰 만든 이미지 점수(rank)
         // models/siglip/tags.json (export_siglip.py가 모델에서 읽은 값)
         const val LOGIT_SCALE = 112.54814f
         const val LOGIT_BIAS = -16.77151f
@@ -44,7 +46,8 @@ class Search(private val ctx: Context) {
     }.also { common = it }
 
     /** segs[i]: 사진 i의 구간(구간 밖이면 null), fake[i]: 실사 아닌 이미지(화면 캡처·AI 그림 등, Fake.kt) */
-    private class Bank(val photos: List<Long>, val segs: List<Long?>, val vecs: List<FloatArray>, val fake: List<Boolean>) {
+    private class Bank(val photos: List<Long>, val segs: List<Long?>, val vecs: List<FloatArray>, val fake: List<Boolean>,
+                       val person: List<Float?>) { // person: 만든 이미지 점수(Fake.kt, 카메라 정보 없는 사진만)
         fun raw(i: Int, q: FloatArray): Float { var s = 0f; val v = vecs[i]; for (d in v.indices) s += v[d] * q[d]; return s }
     }
 
@@ -63,7 +66,7 @@ class Search(private val ctx: Context) {
         val t0 = System.nanoTime()
         val (groups, words, rest) = people(query)
         if (groups.isNotEmpty()) return searchPeople(groups, words, rest, t0)
-        val q = vector(query)
+        val q = templated(query)
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
         val items = rank(b, q).map { c ->
@@ -78,21 +81,24 @@ class Search(private val ctx: Context) {
 
     /**
      * 장면만 검색할 때 칸의 순위(#7). 구간은 가장 닮은 사진의 점수로 겨룬다(표지도 그 사진).
-     * 실사 아닌 이미지(photos.fake: 날씨 지도·화면 캡처 등)는 실사 칸을 다 보인 뒤에만 나온다(일부러 그림을 찾을 때를 위해 빼지는 않는다).
-     *   폰 비교(검색어 12개 상위 12): '눈' 3장, '비행기' 3장 등이 빠졌다.
-     *   구간을 위 두 장 평균으로 겨루는 것도 시험했는데, 상위 칸 대부분이 구간 밖 낱장이라 구간만 깎여 날짜 없는 AI 그림이 오히려 올라와 버렸다.
-     * old: 예전 방식(실사 아닌 이미지도 함께) — debugEval 비교용
+     * 실사 아닌 이미지는 실사 칸을 다 보인 뒤에만 나온다(일부러 그림을 찾을 때를 위해 빼지는 않는다):
+     *   photos.fake 1·2(화면 캡처·만든 이미지), 그리고 만든 이미지 점수가 SOFT_PERSON을 넘는 카메라 정보 없는 사진.
+     *   인물 찾기의 문턱(Fake.PERSON 0.005)은 실사를 빼면 안 돼서 높지만, 여기서는 뒤로 미룰 뿐이라 낮춰도 손해가 작다.
+     * 폰 비교(검색어 12개 상위 12, poc/scene_rank_eval.py): 실사 아닌 이미지 바다 6·눈 4·수영장 4·생일 케이크 3·비행기 3장 → 0.
+     *   구간을 위 두 장 평균으로 겨루는 것도 시험했는데, 상위 칸 대부분이 구간 밖 낱장이라 구간만 깎여 날짜 없는 AI 그림이 오히려 올라왔다.
+     *   또렷함·색 다양함이 낮은 사진 뒤로 보내기도 시험했는데, 걸리는 것이 검색어마다 0~1장이고 눈 발자국 같은 진짜 사진도 걸려 넣지 않았다.
      */
-    private fun rank(b: Bank, q: FloatArray, old: Boolean = false): List<Cand> {
+    private fun rank(b: Bank, q: FloatArray): List<Cand> {
         val (_, scores) = score(b, q)
+        val back = { i: Int -> b.fake[i] || (b.person[i] ?: Float.NEGATIVE_INFINITY) > SOFT_PERSON }
         val cands = ArrayList<Cand>()
         val bySeg = HashMap<Long, MutableList<Int>>()
         for (i in scores.indices) {
             val seg = b.segs[i]
-            if (seg == null) cands.add(Cand(null, i, scores[i], !old && b.fake[i])) else bySeg.getOrPut(seg) { ArrayList() }.add(i)
+            if (seg == null) cands.add(Cand(null, i, scores[i], back(i))) else bySeg.getOrPut(seg) { ArrayList() }.add(i)
         }
         for ((seg, all) in bySeg) {
-            val real = if (old) all else all.filter { !b.fake[it] }
+            val real = all.filter { !back(it) }
             val best = real.ifEmpty { all }.maxBy { scores[it] }
             cands.add(Cand(seg, best, scores[best], real.isEmpty()))
         }
@@ -209,21 +215,60 @@ class Search(private val ctx: Context) {
     @Synchronized
     private fun bank(): Bank {
         val n = "${db.count("SELECT COUNT(*) FROM vectors")}/${db.count("SELECT COUNT(*) FROM segments")}/" +
-                db.count("SELECT COUNT(*) FROM photos WHERE fake = 1")
+                db.count("SELECT COUNT(*) FROM photos WHERE fake > 0")
         bank?.let { if (bankKey == n) return it }
         val photos = ArrayList<Long>(); val segs = ArrayList<Long?>(); val vecs = ArrayList<FloatArray>(); val fake = ArrayList<Boolean>()
-        db.readableDatabase.rawQuery("SELECT p.segment, p.id, v.v, COALESCE(p.fake, 0) FROM vectors v JOIN photos p ON p.id = v.photo_id", null).use {
+        val person = ArrayList<Float?>()
+        db.readableDatabase.rawQuery("""SELECT p.segment, p.id, v.v, COALESCE(p.fake, 0), p.fake_person
+                FROM vectors v JOIN photos p ON p.id = v.photo_id""", null).use {
             while (it.moveToNext()) {
                 segs.add(if (it.isNull(0)) null else it.getLong(0)); photos.add(it.getLong(1)); vecs.add(Db.floats(it.getBlob(2)))
-                fake.add(it.getInt(3) == 1)
+                fake.add(it.getInt(3) != 0); person.add(if (it.isNull(4)) null else it.getFloat(4))
             }
         }
-        return Bank(photos, segs, vecs, fake).also { bank = it; bankKey = n }
+        return Bank(photos, segs, vecs, fake, person).also { bank = it; bankKey = n }
+    }
+
+    /** 사진이 얼마나 '내용 있는지': 96px 회색 썸네일의 라플라시안 분산(또렷함), RGB 표준편차 평균(색 다양함) */
+    private fun detail(id: Long): Pair<Double, Double> {
+        val uri = android.content.ContentUris.withAppendedId(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+        val raw = ctx.contentResolver.loadThumbnail(uri, android.util.Size(96, 96), null)
+        val bmp = android.graphics.Bitmap.createScaledBitmap(raw, 96, 96, true).also { if (it !== raw) raw.recycle() }
+        val n = 96
+        val px = IntArray(n * n).also { bmp.getPixels(it, 0, n, 0, 0, n, n) }
+        bmp.recycle()
+        val g = DoubleArray(px.size) { val c = px[it]; 0.299 * (c shr 16 and 255) + 0.587 * (c shr 8 and 255) + 0.114 * (c and 255) }
+        var sum = 0.0; var sq = 0.0; var k = 0
+        for (y in 1 until n - 1) for (x in 1 until n - 1) {
+            val i = y * n + x
+            val l = g[i - 1] + g[i + 1] + g[i - n] + g[i + n] - 4 * g[i]
+            sum += l; sq += l * l; k++
+        }
+        val std = (0..2).map { ch ->
+            val v = px.map { (it shr (16 - 8 * ch) and 255).toDouble() }
+            val m = v.average(); kotlin.math.sqrt(v.sumOf { (it - m) * (it - m) } / v.size)
+        }.average()
+        return (sq / k - (sum / k) * (sum / k)) to std
     }
 
     /**
-     * 개발용(#7): 앱 폴더에 search_eval.txt(줄마다 검색어를 UTF-8 16진수로)를 adb로 넣으면, 검색어마다 예전·새 순위를
-     * search_eval.csv(검색어 번호, 방식, 순위, 칸 종류, 칸 id, 표지 사진 id, 순위용 점수, 실사 아님, 구간의 벡터 장 수)로 쓰고 txt를 지운다.
+     * 검색어 문형 묶음(#7): 검색어, '… 사진', '… 장면' 세 벡터의 평균을 다시 정규화. 장면만 검색할 때 쓴다.
+     * 폰 비교에서 바다·눈·생일 케이크는 그 장면 사진이 더 올라오고 회색 빈 사진·광고 캡처가 빠졌다. 비행기는 비슷(애초에 맞는 사진이 적다).
+     * 텍스트 모델을 세 번 돌려 검색어 계산 시간이 그만큼 는다.
+     */
+    private fun templated(query: String): FloatArray {
+        val vs = listOf(query, "$query 사진", "$query 장면").map { vector(it) }
+        val m = FloatArray(vs[0].size) { d -> vs.sumOf { it[d].toDouble() }.toFloat() }
+        val len = kotlin.math.sqrt(m.sumOf { (it * it).toDouble() }).toFloat()
+        return FloatArray(m.size) { m[it] / len }
+    }
+
+    /**
+     * 개발용(#7): 앱 폴더에 search_eval.txt(줄마다 검색어를 UTF-8 16진수로)를 adb로 넣으면, 검색어마다 후보 칸을
+     * search_eval.csv로 쓰고 txt를 지운다. 순위 방식은 PC(poc/scene_rank_eval.py)에서 이 숫자들로 다시 계산해 비교한다.
+     *   후보 = 낱말 검색어(a)와 문형 묶음(b, templated) 각각의 상위 POOL칸 합집합(실사 아닌 이미지도 함께)
+     *   열: 검색어 번호, 칸 종류, 칸 id, 그리고 a·b마다 표지 사진·순위용 점수·실사 판정(0 실사 1 캡처 2 만든 이미지)·
+     *       만든 이미지 점수·또렷함·색 다양함(detail)
      * 사진 번호와 점수만 나간다(벡터·사진은 폰 밖으로 안 나감). 정리 화면을 열 때(scan) 확인한다.
      */
     fun debugEval() {
@@ -232,13 +277,34 @@ class Search(private val ctx: Context) {
         val queries = list.readLines().filter { it.isNotBlank() }
             .map { h -> String(ByteArray(h.trim().length / 2) { h.trim().substring(2 * it, 2 * it + 2).toInt(16).toByte() }, Charsets.UTF_8) }
         val b = bank()
-        val nvec = HashMap<Long, Int>().also { m -> b.segs.forEach { s -> if (s != null) m[s] = (m[s] ?: 0) + 1 } }
-        val out = StringBuilder("query,method,rank,kind,id,cover,score,fake,nvec\n")
+        val details = HashMap<Long, Pair<Double, Double>>()
+        val d = { id: Long -> details.getOrPut(id) { try { detail(id) } catch (e: Exception) { -1.0 to -1.0 } } }
+        val out = StringBuilder("query,kind,id,cover_a,score_a,fake_a,person_a,lap_a,std_a,cover_b,score_b,fake_b,person_b,lap_b,std_b\n")
         for ((k, query) in queries.withIndex()) {
-            val q = vector(query)
-            for (old in listOf(true, false)) rank(b, q, old).forEachIndexed { r, c ->
-                out.append("$k,${if (old) "old" else "new"},${r + 1},${if (c.seg != null) "segment" else "photo"},${c.seg ?: b.photos[c.cover]},")
-                    .append("${b.photos[c.cover]},${"%.4f".format(c.score)},${if (b.fake[c.cover]) 1 else 0},${c.seg?.let { nvec[it] } ?: 1}\n")
+            // 칸마다 가장 닮은 사진(구간은 그 안에서 가장 높은 사진, 표지와 점수)
+            val best = { q: FloatArray ->
+                val (_, s) = score(b, q)
+                val m = HashMap<String, Int>()
+                for (i in s.indices) {
+                    val key = b.segs[i]?.let { "segment,$it" } ?: "photo,${b.photos[i]}"
+                    if ((m[key]?.let { s[it] } ?: Float.NEGATIVE_INFINITY) < s[i]) m[key] = i
+                }
+                m to s
+            }
+            val t1 = System.nanoTime(); val qa = vector(query)
+            val t2 = System.nanoTime(); val qb = templated(query)
+            android.util.Log.i("PhotoTracer", "search_eval 검색어 $k: 낱말 ${(t2 - t1) / 1_000_000}ms, 문형 묶음 ${(System.nanoTime() - t2) / 1_000_000}ms")
+            val (ma, sa) = best(qa); val (mb, sb) = best(qb)
+            val pool = (ma.keys.sortedByDescending { sa[ma[it]!!] }.take(POOL) + mb.keys.sortedByDescending { sb[mb[it]!!] }.take(POOL)).toSet()
+            val fakeOf = { i: Int -> db.count("SELECT COALESCE(fake, 0) FROM photos WHERE id = ${b.photos[i]}") }
+            for (key in pool) {
+                out.append("$k,$key")
+                for ((m, s) in listOf(ma to sa, mb to sb)) {
+                    val i = m[key]!!; val (lap, std) = d(b.photos[i])
+                    out.append(",${b.photos[i]},${"%.5f".format(s[i])},${fakeOf(i)},${b.person[i]?.let { "%.5f".format(it) } ?: ""}")
+                        .append(",${"%.1f".format(lap)},${"%.1f".format(std)}")
+                }
+                out.append("\n")
             }
         }
         File(dir, "search_eval.csv").apply { writeText(out.toString()); setReadable(true, false) }
