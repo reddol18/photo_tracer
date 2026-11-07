@@ -13,6 +13,7 @@ import java.nio.ByteOrder
 /**
  * 자연어 검색. 검색어 → 토크나이저 → 텍스트 모델 → 768차원 벡터, 사진 벡터와 코사인으로 순위를 매긴다.
  * 구간은 그 안에서 가장 닮은 사진의 점수로 겨루고(표지도 그 사진), 구간 밖 사진(찍은 날 모름·화면 캡처)은 한 장씩 겨룬다.
+ *   실사 아닌 이미지는 맨 뒤로(rank 참고).
  *   예전에는 구간을 장면 벡터 평균(0단계 '대표 평균')으로 겨뤘는데, 평균은 점수가 낮아져 낱장 사진과 섞이면 순서가 어긋났다.
  * 흔한 검색어 방향 빼기: 앨범 대부분이 아이 사진이라 "바다에서 노는 아이"는 '바다'보다 '아이'에 끌린다.
  *   일상 문구 30개 평균(assets/search/common.bin, poc/app_assets.py common)을 검색어 벡터에서 빼고 순위를 매긴다.
@@ -29,7 +30,7 @@ class Search(private val ctx: Context) {
         private var tok: Tokenizer? = null
         private var text: OrtSession? = null
         private var bank: Bank? = null
-        private var bankKey = -1
+        private var bankKey = ""
         private var common: FloatArray? = null
         // 인물 낱말 뒤에 붙는 조사(긴 것부터 떼어 본다)와, 인물 검색에서 장면 검색어로 넘기지 않을 낱말
         private val JOSA = listOf("이랑", "이하고", "이와", "이가", "이는", "이를", "이의", "이도", "이만", "에게", "한테", "하고",
@@ -42,8 +43,10 @@ class Search(private val ctx: Context) {
         FloatArray(b.remaining() / 4) { b.getFloat() }
     }.also { common = it }
 
-    /** segs[i]: 사진 i의 구간(구간 밖이면 null) */
-    private class Bank(val photos: List<Long>, val segs: List<Long?>, val vecs: List<FloatArray>)
+    /** segs[i]: 사진 i의 구간(구간 밖이면 null), fake[i]: 실사 아닌 이미지(화면 캡처·AI 그림 등, Fake.kt) */
+    private class Bank(val photos: List<Long>, val segs: List<Long?>, val vecs: List<FloatArray>, val fake: List<Boolean>) {
+        fun raw(i: Int, q: FloatArray): Float { var s = 0f; val v = vecs[i]; for (d in v.indices) s += v[d] * q[d]; return s }
+    }
 
     private val db = Db.get(ctx)
     private val models = Models(ctx)
@@ -63,18 +66,37 @@ class Search(private val ctx: Context) {
         val q = vector(query)
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
-        val (raw, scores) = score(b, q)
-        // 점수 높은 사진부터 훑으며, 구간은 처음 나온(= 가장 닮은) 사진으로 한 번만 넣는다
-        val seen = HashSet<Long>()
-        val items = ArrayList<Map<String, Any?>>()
-        for (i in scores.indices.sortedByDescending { scores[it] }) {
-            val seg = b.segs[i]
-            if (seg != null && !seen.add(seg)) continue
-            items.add(if (seg != null) segmentItem(seg, b.photos[i], raw[i]) else photoItem(b.photos[i], raw[i]))
-            if (items.size == TOP) break
+        val items = rank(b, q).map { c ->
+            if (c.seg != null) segmentItem(c.seg, b.photos[c.cover], b.raw(c.cover, q)) else photoItem(b.photos[c.cover], b.raw(c.cover, q))
         }
         return mapOf("items" to items, "query_ms" to tq, "total_ms" to (System.nanoTime() - t0) / 1e6,
                      "candidates" to b.segs.filterNotNull().toSet().size + b.segs.count { it == null })
+    }
+
+    /** 장면 검색의 한 칸: 구간(seg) 또는 구간 밖 사진 한 장. cover·score는 bank 안의 순번과 순위용 점수 */
+    private class Cand(val seg: Long?, val cover: Int, val score: Float, val fake: Boolean)
+
+    /**
+     * 장면만 검색할 때 칸의 순위(#7). 구간은 가장 닮은 사진의 점수로 겨룬다(표지도 그 사진).
+     * 실사 아닌 이미지(photos.fake: 날씨 지도·화면 캡처 등)는 실사 칸을 다 보인 뒤에만 나온다(일부러 그림을 찾을 때를 위해 빼지는 않는다).
+     *   폰 비교(검색어 12개 상위 12): '눈' 3장, '비행기' 3장 등이 빠졌다.
+     *   구간을 위 두 장 평균으로 겨루는 것도 시험했는데, 상위 칸 대부분이 구간 밖 낱장이라 구간만 깎여 날짜 없는 AI 그림이 오히려 올라와 버렸다.
+     * old: 예전 방식(실사 아닌 이미지도 함께) — debugEval 비교용
+     */
+    private fun rank(b: Bank, q: FloatArray, old: Boolean = false): List<Cand> {
+        val (_, scores) = score(b, q)
+        val cands = ArrayList<Cand>()
+        val bySeg = HashMap<Long, MutableList<Int>>()
+        for (i in scores.indices) {
+            val seg = b.segs[i]
+            if (seg == null) cands.add(Cand(null, i, scores[i], !old && b.fake[i])) else bySeg.getOrPut(seg) { ArrayList() }.add(i)
+        }
+        for ((seg, all) in bySeg) {
+            val real = if (old) all else all.filter { !b.fake[it] }
+            val best = real.ifEmpty { all }.maxBy { scores[it] }
+            cands.add(Cand(seg, best, scores[best], real.isEmpty()))
+        }
+        return cands.sortedWith(compareBy<Cand> { it.fake }.thenByDescending { it.score }).take(TOP)
     }
 
     /** 사진 벡터마다 (코사인, 흔한 방향을 뺀 순위용 점수) */
@@ -183,18 +205,44 @@ class Search(private val ctx: Context) {
                   "date_source" to it.getString(2), "score" to score.toDouble(), "conf" to conf(score))
         }
 
-    /** 장면 벡터나 구간이 바뀌었을 때만 다시 만든다 */
+    /** 장면 벡터, 구간, 실사 아닌 이미지 판정이 바뀌었을 때만 다시 만든다 */
     @Synchronized
     private fun bank(): Bank {
-        val n = db.count("SELECT COUNT(*) FROM vectors") * 100_003 + db.count("SELECT COUNT(*) FROM segments")
+        val n = "${db.count("SELECT COUNT(*) FROM vectors")}/${db.count("SELECT COUNT(*) FROM segments")}/" +
+                db.count("SELECT COUNT(*) FROM photos WHERE fake = 1")
         bank?.let { if (bankKey == n) return it }
-        val photos = ArrayList<Long>(); val segs = ArrayList<Long?>(); val vecs = ArrayList<FloatArray>()
-        db.readableDatabase.rawQuery("SELECT p.segment, p.id, v.v FROM vectors v JOIN photos p ON p.id = v.photo_id", null).use {
+        val photos = ArrayList<Long>(); val segs = ArrayList<Long?>(); val vecs = ArrayList<FloatArray>(); val fake = ArrayList<Boolean>()
+        db.readableDatabase.rawQuery("SELECT p.segment, p.id, v.v, COALESCE(p.fake, 0) FROM vectors v JOIN photos p ON p.id = v.photo_id", null).use {
             while (it.moveToNext()) {
                 segs.add(if (it.isNull(0)) null else it.getLong(0)); photos.add(it.getLong(1)); vecs.add(Db.floats(it.getBlob(2)))
+                fake.add(it.getInt(3) == 1)
             }
         }
-        return Bank(photos, segs, vecs).also { bank = it; bankKey = n }
+        return Bank(photos, segs, vecs, fake).also { bank = it; bankKey = n }
+    }
+
+    /**
+     * 개발용(#7): 앱 폴더에 search_eval.txt(줄마다 검색어를 UTF-8 16진수로)를 adb로 넣으면, 검색어마다 예전·새 순위를
+     * search_eval.csv(검색어 번호, 방식, 순위, 칸 종류, 칸 id, 표지 사진 id, 순위용 점수, 실사 아님, 구간의 벡터 장 수)로 쓰고 txt를 지운다.
+     * 사진 번호와 점수만 나간다(벡터·사진은 폰 밖으로 안 나감). 정리 화면을 열 때(scan) 확인한다.
+     */
+    fun debugEval() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val list = File(dir, "search_eval.txt").takeIf { it.exists() } ?: return
+        val queries = list.readLines().filter { it.isNotBlank() }
+            .map { h -> String(ByteArray(h.trim().length / 2) { h.trim().substring(2 * it, 2 * it + 2).toInt(16).toByte() }, Charsets.UTF_8) }
+        val b = bank()
+        val nvec = HashMap<Long, Int>().also { m -> b.segs.forEach { s -> if (s != null) m[s] = (m[s] ?: 0) + 1 } }
+        val out = StringBuilder("query,method,rank,kind,id,cover,score,fake,nvec\n")
+        for ((k, query) in queries.withIndex()) {
+            val q = vector(query)
+            for (old in listOf(true, false)) rank(b, q, old).forEachIndexed { r, c ->
+                out.append("$k,${if (old) "old" else "new"},${r + 1},${if (c.seg != null) "segment" else "photo"},${c.seg ?: b.photos[c.cover]},")
+                    .append("${b.photos[c.cover]},${"%.4f".format(c.score)},${if (b.fake[c.cover]) 1 else 0},${c.seg?.let { nvec[it] } ?: 1}\n")
+            }
+        }
+        File(dir, "search_eval.csv").apply { writeText(out.toString()); setReadable(true, false) }
+        list.delete()
     }
 
     /**

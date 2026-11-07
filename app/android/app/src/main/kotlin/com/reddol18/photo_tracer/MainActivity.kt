@@ -77,6 +77,7 @@ class MainActivity : FlutterActivity() {
                 "openVendorSettings" -> { openVendorSettings(); result.success(null) }
                 "scan" -> {
                     if (photosGranted()) { if (IndexWorker.nightOn(this)) IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
+                    worker.execute { try { Search(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "search_eval 실패: $e") } }
                     result.success(null)
                 }
                 "setNight" -> { IndexWorker.setNight(this, call.argument<Boolean>("on") == true); result.success(null) }
