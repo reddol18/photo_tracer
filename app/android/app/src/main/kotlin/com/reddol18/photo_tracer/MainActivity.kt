@@ -78,6 +78,7 @@ class MainActivity : FlutterActivity() {
                 "scan" -> {
                     if (photosGranted()) { if (IndexWorker.nightOn(this)) IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     worker.execute { try { Search(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "search_eval 실패: $e") } }
+                    clusterer.execute { try { People(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "cluster_eval 실패: $e") } }
                     result.success(null)
                 }
                 "setNight" -> { IndexWorker.setNight(this, call.argument<Boolean>("on") == true); result.success(null) }
@@ -89,9 +90,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "persons" -> bg {
                     val out = ArrayList<Map<String, Any>>()
-                    db.readableDatabase.rawQuery("""SELECT person, COUNT(DISTINCT photo_id) n, MIN(id) FROM faces
+                    // known: 얼굴 절반 이상이 이미 등록한 인물(찾음 또는 정답) — 화면에서 접어 둔다(#6)
+                    db.readableDatabase.rawQuery("""SELECT person, COUNT(DISTINCT photo_id) n, MIN(id),
+                        AVG(who IS NOT NULL OR EXISTS (SELECT 1 FROM face_marks m WHERE m.face_id = faces.id AND m.ok = 1)) FROM faces
                         WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW} ORDER BY n DESC""", null).use {
-                        while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "n" to it.getInt(1), "face" to cover(db, it.getLong(0))))
+                        while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "n" to it.getInt(1), "face" to cover(db, it.getLong(0)),
+                            "known" to (it.getDouble(3) >= 0.5)))
                     }
                     out
                 }

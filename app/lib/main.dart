@@ -620,7 +620,23 @@ class _PeoplePageState extends State<PeoplePage> {
         ),
       ),
       if (busy) SliverToBoxAdapter(child: clusterProgress(ci)),
-      SliverPadding(
+      clusterGrid(grid, c.where((e) => e['known'] != true).toList()),
+      // 얼굴 절반 이상이 이미 등록한 인물인 묶음은 접어 둔다 — 새로 등록할 사람을 찾기 쉽게(#6)
+      SliverToBoxAdapter(
+        child: ListTile(
+          leading: Icon(showKnown ? Icons.expand_less : Icons.expand_more),
+          title: Text('이미 등록한 인물의 묶음 ${c.where((e) => e['known'] == true).length}개'),
+          subtitle: const Text('얼굴 절반 이상이 등록한 인물로 찾아진 묶음입니다'),
+          onTap: () => setState(() => showKnown = !showKnown),
+        ),
+      ),
+      if (showKnown) clusterGrid(grid, c.where((e) => e['known'] == true).toList()),
+    ]);
+  }
+
+  bool showKnown = false;
+
+  Widget clusterGrid(SliverGridDelegate grid, List<Map<String, dynamic>> c) => SliverPadding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         sliver: SliverGrid(
           gridDelegate: grid,
@@ -628,18 +644,16 @@ class _PeoplePageState extends State<PeoplePage> {
             final id = (c[i]['id'] as num).toInt();
             return GestureDetector(
               onTap: () async {
+                // 사진마다 묶인 얼굴을 귀퉁이에 보인다: 사진에 여러 명이 있을 때 누가 묶였는지(#6)
                 await Navigator.push(context, MaterialPageRoute(
-                    builder: (_) => PhotosPage(title: '자동 묶음 $id · ${c[i]['n']}장',
-                        load: () => channel.invokeMethod('personPhotos', {'id': id}).then((r) => (r as List).map((e) => (e as Map)['id']).toList()))));
+                    builder: (_) => PhotosPage(title: '자동 묶음 $id · ${c[i]['n']}장', load: () => channel.invokeMethod('personPhotos', {'id': id}))));
                 load();
               },
               child: faceTile(context, c[i]['face'] as int, '묶음 $id · ${c[i]['n']}장'),
             );
           }),
         ),
-      ),
-    ]);
-  }
+      );
 }
 
 // ───────────────────────────── 기록 (밤 작업마다 한 줄)
@@ -724,11 +738,19 @@ class PhotosPage extends StatefulWidget {
 
 class _PhotosPageState extends State<PhotosPage> {
   List<int>? ids;
+  final faces = <int, int>{}; // 사진 → 귀퉁이에 보일 얼굴. load가 {id, face} 목록을 주면(자동 묶음) 채운다
 
   @override
   void initState() {
     super.initState();
-    widget.load().then((r) => setState(() => ids = (r as List).map((e) => (e as num).toInt()).toList()));
+    widget.load().then((r) => setState(() => ids = (r as List).map((e) {
+          if (e is Map) {
+            final id = (e['id'] as num).toInt();
+            if (e['face'] != null) faces[id] = (e['face'] as num).toInt();
+            return id;
+          }
+          return (e as num).toInt();
+        }).toList()));
   }
 
   @override
@@ -740,7 +762,29 @@ class _PhotosPageState extends State<PhotosPage> {
                 padding: const EdgeInsets.all(4),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 2, crossAxisSpacing: 2),
                 itemCount: ids!.length,
-                itemBuilder: (context, i) => GestureDetector(onTap: () => showPhoto(context, ids![i]), child: Thumb(ids![i])),
+                itemBuilder: (context, i) {
+                  final face = faces[ids![i]];
+                  return GestureDetector(
+                    onTap: () => showPhoto(context, ids![i]),
+                    child: face == null
+                        ? Thumb(ids![i])
+                        : Stack(fit: StackFit.expand, children: [
+                            Thumb(ids![i]),
+                            Align(
+                              alignment: Alignment.bottomRight,
+                              child: FractionallySizedBox(
+                                widthFactor: 0.42,
+                                heightFactor: 0.42,
+                                child: Container(
+                                  margin: const EdgeInsets.all(3),
+                                  decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)),
+                                  child: ClipOval(child: Thumb(face, face: true)),
+                                ),
+                              ),
+                            ),
+                          ]),
+                  );
+                },
               ),
       );
 }
