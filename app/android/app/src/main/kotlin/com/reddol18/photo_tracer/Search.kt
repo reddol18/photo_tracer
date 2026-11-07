@@ -62,10 +62,14 @@ class Search(private val ctx: Context) {
     }
 
     /** 결과: kind(segment|photo), id, cover(보여 줄 사진), n(장 수), date, date_source, score(코사인), conf(0~1). 흔한 방향을 뺀 점수 높은 순 */
-    fun search(query: String): Map<String, Any?> {
+    fun search(query: String, picks: Map<String, List<Long>> = emptyMap()): Map<String, Any?> {
         val t0 = System.nanoTime()
-        val (groups, words, rest) = people(query)
-        if (groups.isNotEmpty()) return searchPeople(groups, words, rest, t0)
+        val (words, rest) = people(query, picks)
+        if (words.isNotEmpty()) return searchPeople(words.map { it.chosen }, words.map { it.word }, rest, t0) + mapOf(
+            // 화면의 인물 칩: 낱말, 고른 인물, 바꾸기 후보(풀이 포함), 칩 안내를 보일지
+            "words" to words.map { w -> mapOf("word" to w.word, "chosen" to w.chosen.toList(),
+                "cands" to w.cands.map { mapOf("ids" to it.ids.toList(), "note" to it.note) }) },
+            "hint" to !prefs.getBoolean("hint_seen", false))
         val q = templated(query)
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
@@ -115,28 +119,89 @@ class Search(private val ctx: Context) {
         return raw to scores
     }
 
+    /** 인물 낱말 하나의 해석 후보. ids: 이 후보로 찾을 인물(관계가 같은 사람이 여럿이면 그중 누구든), note: 화면에 보일 풀이 */
+    class Reading(val ids: Set<Long>, val note: String)
+
+    /** 검색어 속 인물 낱말: 후보(앞이 기본 해석)와 고른 후보 */
+    class Word(val word: String, val cands: List<Reading>, var chosen: Set<Long>)
+
     /**
      * 검색어 속 등록한 인물. 모델은 개인 이름을 모르니(이름으로 찾으면 화보·연예인 사진이 나왔다) 낱말을 인물 정보와 맞춘다.
      * 이름, 세 글자 이름은 성을 뺀 것, 관계. 조사가 붙어도("딸이랑", "엄마와") 찾는다.
-     * 결과: 낱말마다 인물 id 묶음(관계가 같은 사람이 여럿이면 그중 누구든), 맞춘 낱말, 남은 검색어
+     * 관계는 사용자 기준이라(#5) 같은 뜻의 다른 말(Kin.SAME)과, 함께 나온 다른 인물 입장의 말(Kin.FROM)로도 풀어 본다:
+     *   "딸과 엄마" → 엄마 = 딸 입장의 엄마(아내) 또는 사용자의 엄마(할머니). 어느 쪽인지 검색어만으로 정할 수 없어
+     *   다른 인물 입장 풀이를 먼저 고르고 화면에 썸네일로 보여 사용자가 바꾸게 한다(picks). 바꾼 것은 기억한다(같은 낱말·같은 짝).
+     *   고른 조합으로 함께 나온 사진이 없으면, 바꾼 적 없는 낱말은 사진이 있는 다른 풀이로 바꾼다.
+     * 결과: 인물 낱말들, 남은 검색어
      */
-    private fun people(query: String): Triple<List<Set<Long>>, List<String>, String> {
-        val keys = HashMap<String, MutableSet<Long>>()
+    private fun people(query: String, picks: Map<String, List<Long>>): Pair<List<Word>, String> {
+        class P(val id: Long, val name: String, val kin: String?)
+        val ps = ArrayList<P>()
         db.readableDatabase.rawQuery("SELECT id, name, relation FROM people", null).use {
-            while (it.moveToNext()) {
-                val name = it.getString(1).replace(" ", "")
-                listOfNotNull(name, if (name.length == 3) name.substring(1) else null, it.getString(2)?.replace(" ", ""))
-                    .filter { k -> k.isNotEmpty() }.forEach { k -> keys.getOrPut(k) { HashSet() }.add(it.getLong(0)) }
+            while (it.moveToNext()) ps.add(P(it.getLong(0), it.getString(1).replace(" ", ""), it.getString(2)?.replace(" ", "")?.let(Kin::canon)))
+        }
+        val byName = HashMap<String, MutableSet<Long>>()
+        for (p in ps) listOfNotNull(p.name, if (p.name.length == 3) p.name.substring(1) else null)
+            .forEach { byName.getOrPut(it) { HashSet() }.add(p.id) }
+        val withKin = { k: String -> ps.filter { it.kin == k }.map { it.id }.toSet() }
+
+        // 1) 낱말마다 이름·관계(같은 뜻 포함)로 바로 맞는 후보. 다른 인물 입장으로만 풀리는 말(할머니 등)도 일단 둔다
+        class Tok(val raw: String, val word: String, val direct: List<Reading>, val kin: String?)
+        val toks = ArrayList<Tok>(); val rest = ArrayList<String>()
+        for (w in query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }) {
+            val forms = listOf(w) + JOSA.filter { w.length > it.length && w.endsWith(it) }.map { w.dropLast(it.length) }
+            val hit = forms.firstNotNullOfOrNull { f ->
+                val kin = Kin.SAME[f]
+                val direct = listOfNotNull(
+                    // 이름이 관계 말과 같으면("엄마"로 등록) 이름도 사용자 기준 관계로 보고, 다른 인물 입장 풀이 뒤에 둔다
+                    byName[f]?.let { Reading(it, if (kin != null) "내 $kin" else f) },
+                    kin?.let { withKin(it) }?.takeIf { it.isNotEmpty() }?.let { Reading(it, "내 $kin") })
+                if (direct.isNotEmpty() || (kin != null && Kin.FROM.values.any { kin in it })) Tok(w, f, direct, kin) else null
+            }
+            if (hit != null) toks.add(hit) else if (w !in FILLER) rest.add(w)
+        }
+        val label = { k: String -> k }
+        // 2) 다른 인물 입장의 풀이: 다른 낱말의 기본 후보 인물들의 관계에서 본 이 낱말
+        val words = toks.mapIndexed { i, t ->
+            val rel = ArrayList<Reading>()
+            if (t.kin != null) for ((j, o) in toks.withIndex()) {
+                if (j == i) continue
+                val oKins = o.direct.firstOrNull()?.ids?.mapNotNull { id -> ps.first { it.id == id }.kin }?.toSet() ?: continue
+                for (ok in oKins) for (k in Kin.FROM[ok]?.get(t.kin) ?: emptyList()) {
+                    if (t.direct.isNotEmpty() && Kin.rank(ok) <= Kin.rank(t.kin)) continue // 위 세대 입장으로는 다시 풀지 않는다
+                    val ids = withKin(k)
+                    if (ids.isNotEmpty() && rel.none { it.ids == ids }) rel.add(Reading(ids, "${label(ok)} 입장의 ${t.word} = 내 ${label(k)}"))
+                }
+            }
+            val names = t.direct.filter { !it.note.startsWith("내 ") }
+            val cands = (names + rel + t.direct.filter { it.note.startsWith("내 ") }).distinctBy { it.ids }
+            if (cands.isEmpty()) rest.add(t.raw) // 풀리지 않은 말은 장면 검색어로 되돌린다
+            Word(t.word, cands, cands.firstOrNull()?.ids ?: emptySet())
+        }.filter { it.cands.isNotEmpty() }
+        // 3) 사용자가 고른 것(이번 검색 또는 기억해 둔 것)
+        val others = { w: Word -> words.filter { it !== w }.joinToString(",") { it.word } }
+        val fixed = HashSet<Word>()
+        for (w in words) {
+            val key = "${w.word}|${others(w)}"
+            val pick = picks[w.word]?.toSet()?.also { prefs.edit().putString(key, it.joinToString(",")).apply() }
+                ?: prefs.getString(key, null)?.split(",")?.mapNotNull { it.toLongOrNull() }?.toSet()
+            if (pick != null && pick.all { id -> ps.any { it.id == id } }) { w.chosen = pick; fixed.add(w) }
+        }
+        // 4) 함께 나온 사진이 없으면 바꾼 적 없는 낱말의 다른 풀이를 차례로 본다
+        if (words.size > 1 && words.map { photosOf(it.chosen) }.reduce { a, b -> a intersect b }.isEmpty()) {
+            for (w in words.filter { it !in fixed }) {
+                val alt = w.cands.drop(1).firstOrNull { c ->
+                    words.map { if (it === w) photosOf(c.ids) else photosOf(it.chosen) }.reduce { a, b -> a intersect b }.isNotEmpty()
+                }
+                if (alt != null) { w.chosen = alt.ids; break }
             }
         }
-        val groups = ArrayList<Set<Long>>(); val words = ArrayList<String>(); val rest = ArrayList<String>()
-        for (w in query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }) {
-            val k = (listOf(w) + JOSA.filter { w.length > it.length && w.endsWith(it) }.map { w.dropLast(it.length) })
-                .firstOrNull { it in keys }
-            if (k != null) { groups.add(keys[k]!!); words.add(k) } else if (w !in FILLER) rest.add(w)
-        }
-        return Triple(groups, words, rest.joinToString(" "))
+        return words to rest.joinToString(" ")
     }
+
+    /** 사용자가 바꾼 인물 풀이(people)와, 칩 안내를 본 적 있는지 */
+    private val prefs = ctx.getSharedPreferences("search_picks", Context.MODE_PRIVATE)
+    fun hintSeen() = prefs.edit().putBoolean("hint_seen", true).apply()
 
     /** 인물의 사진: 정답 + 찾음(실사 아닌 이미지는 빼고). '확인 필요'는 넣지 않는다 */
     private fun photosOf(ids: Set<Long>): Set<Long> {

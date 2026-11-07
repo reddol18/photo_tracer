@@ -330,15 +330,28 @@ class _SearchPageState extends State<SearchPage> {
   List<Map<String, dynamic>> items = [];
   String info = '예: 바다에서 노는 아이, 생일 케이크, 눈 오는 날';
   bool busy = false;
+  // 인물 칩(#5): 검색어 속 인물 낱말마다 앱이 고른 인물. 눌러서 바꾸면 picks에 넣어 다시 검색한다
+  List<Map<String, dynamic>> words = [];
+  final picks = <String, List<int>>{};
+  bool hint = false; // 칩을 한 번도 안 눌렀으면 "눌러서 바꿀 수 있어요"
+  Map<int, Map<String, dynamic>> people = {}; // 등록한 인물: id → 이름·관계·대표 얼굴
 
-  Future<void> run(String q) async {
+  Future<void> run(String q, {bool keepPicks = false}) async {
     if (q.trim().isEmpty) return;
+    if (!keepPicks) picks.clear();
     setState(() { busy = true; info = '찾는 중… (처음 한 번은 검색 모델을 여느라 몇 초 걸립니다)'; });
     try {
-      final r = Map<String, dynamic>.from(await channel.invokeMethod('search', {'q': q}));
+      final r = Map<String, dynamic>.from(await channel.invokeMethod('search', {'q': q, 'picks': picks}));
       final list = (r['items'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
       final rest = r['rest'] as String? ?? '';
+      final ws = ((r['words'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
+      if (ws.isNotEmpty && people.isEmpty) {
+        final p = await channel.invokeMethod('people');
+        people = {for (final e in p as List) (e['id'] as num).toInt(): Map<String, dynamic>.from(e)};
+      }
       setState(() {
+        words = ws;
+        hint = r['hint'] == true;
         items = list;
         // 등록한 인물이 든 검색어: 그 인물 사진만, 남은 낱말이 있으면 그 장면 순, 없으면 최근 순
         info = r['who'] != null
@@ -352,6 +365,77 @@ class _SearchPageState extends State<SearchPage> {
     } finally {
       setState(() => busy = false);
     }
+  }
+
+  List<int> ints(dynamic l) => (l as List).map((e) => (e as num).toInt()).toList();
+
+  /// 인물 몇 명의 이름: "딸" / "딸 외 1명"
+  String whoLabel(List<int> ids) {
+    final names = ids.map((id) => people[id] != null ? personLabel(people[id]!) : '?').toList();
+    return names.length <= 1 ? (names.isEmpty ? '?' : names.first) : '${names.first} 외 ${names.length - 1}명';
+  }
+
+  Widget faceDot(List<int> ids, double size) {
+    final face = ids.isEmpty ? null : people[ids.first]?['face'] as int?;
+    return SizedBox(
+        width: size, height: size,
+        child: ClipOval(child: face == null ? Container(color: Colors.black12) : Thumb(face, face: true)));
+  }
+
+  /// 인물 칩: 작은 얼굴 + 이름 + ▾. 테두리가 있는 칩 모양이라 누를 수 있는 것이 보이게(#5)
+  Widget personChip(BuildContext context, Map<String, dynamic> w) {
+    final cs = Theme.of(context).colorScheme;
+    final chosen = ints(w['chosen']);
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => choose(context, w),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(3, 3, 6, 3),
+        decoration: BoxDecoration(border: Border.all(color: cs.primary), borderRadius: BorderRadius.circular(20), color: cs.primaryContainer.withValues(alpha: 0.4)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          faceDot(chosen, 24),
+          const SizedBox(width: 6),
+          Text('${w['word']}: ${whoLabel(chosen)}', style: Theme.of(context).textTheme.bodySmall),
+          Icon(Icons.arrow_drop_down, size: 18, color: cs.primary),
+        ]),
+      ),
+    );
+  }
+
+  /// 칩을 누르면: 그 낱말로 볼 수 있는 사람(풀이와 함께) 먼저, 그다음 다른 등록 인물. 고르면 바로 다시 검색
+  Future<void> choose(BuildContext context, Map<String, dynamic> w) async {
+    if (hint) { channel.invokeMethod('searchHintSeen'); setState(() => hint = false); }
+    final word = w['word'] as String;
+    final chosen = ints(w['chosen']);
+    final cands = (w['cands'] as List).map((c) => (ids: ints(c['ids']), note: c['note'] as String)).toList();
+    final covered = {for (final c in cands) if (c.ids.length == 1) c.ids.first};
+    final others = people.keys.where((id) => !covered.contains(id)).toList();
+    bool same(List<int> a) => a.length == chosen.length && a.toSet().containsAll(chosen);
+    Widget tile(List<int> ids, String? note) => ListTile(
+          leading: faceDot(ids, 36),
+          title: Text(whoLabel(ids)),
+          subtitle: note == null ? null : Text(note),
+          trailing: same(ids) ? const Icon(Icons.check) : null,
+          onTap: () => Navigator.pop(context, ids),
+        );
+    final picked = await showModalBottomSheet<List<int>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(title: Text('"$word"(으)로 볼 수 있는 사람', style: Theme.of(context).textTheme.titleSmall)),
+            for (final c in cands) tile(c.ids, c.note),
+            if (others.isNotEmpty) ListTile(title: Text('다른 등록 인물', style: Theme.of(context).textTheme.titleSmall)),
+            for (final id in others) tile([id], null),
+          ]),
+        ),
+      ),
+    );
+    if (picked == null || same(picked)) return;
+    picks[word] = picked;
+    run(ctrl.text, keepPicks: true);
   }
 
   @override
@@ -370,6 +454,14 @@ class _SearchPageState extends State<SearchPage> {
             ),
           ),
         ),
+        if (words.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
+              for (final w in words) personChip(context, w),
+              if (hint) Text('눌러서 다른 사람으로 바꿀 수 있어요', style: Theme.of(context).textTheme.bodySmall),
+            ]),
+          ),
         Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text(info, style: Theme.of(context).textTheme.bodySmall)),
         const SizedBox(height: 8),
         Expanded(

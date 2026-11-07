@@ -84,7 +84,12 @@ class MainActivity : FlutterActivity() {
                 "setNight" -> { IndexWorker.setNight(this, call.argument<Boolean>("on") == true); result.success(null) }
                 "startNow" -> { IndexWorker.startNow(this); result.success(null) }
                 "stopNow" -> { IndexWorker.stopNow(this); result.success(null) }
-                "search" -> bg { Search(this).search(call.argument<String>("q") ?: "") }
+                // picks: 사용자가 칩에서 바꾼 인물 풀이 {낱말: [인물 id]} (#5)
+                "search" -> bg {
+                    val picks = call.argument<Map<String, List<Number>>>("picks")?.mapValues { (_, v) -> v.map { it.toLong() } } ?: emptyMap()
+                    Search(this).search(call.argument<String>("q") ?: "", picks)
+                }
+                "searchHintSeen" -> bg { Search(this).hintSeen() }
                 "segmentPhotos" -> bg {
                     ids(db, "SELECT id FROM photos WHERE segment = ? ORDER BY taken_at", call.argument<Number>("id").toString())
                 }
