@@ -13,7 +13,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <application
-        android:label="Photo Tracer"
+        android:label="추억먹는하마"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

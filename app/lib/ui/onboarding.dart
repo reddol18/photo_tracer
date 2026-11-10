@@ -89,15 +89,21 @@ class _OnboardingPageState extends State<OnboardingPage> with WidgetsBindingObse
 }
 
 class _Head extends StatelessWidget {
-  const _Head(this.title, this.body, {this.icon});
+  const _Head(this.title, this.body, {this.icon, this.appName = false});
   final String title, body;
   final IconData? icon;
+  final bool appName; // 첫 화면 맨 위에 앱 이름을 작게 한 줄
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      SizedBox(height: icon == null ? 40 : 56),
+      if (appName) ...[
+        const SizedBox(height: 24),
+        Text('추억먹는하마', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: cs.primary)),
+        const SizedBox(height: 16),
+      ] else
+        SizedBox(height: icon == null ? 40 : 56),
       if (icon != null) ...[
         Container(
           width: 88, height: 88,
@@ -138,7 +144,7 @@ class _Promise extends StatelessWidget {
         );
     return SingleChildScrollView(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const _Head('사진은 이 폰을\n떠나지 않아요', '얼굴 찾기와 장면 분석을 모두 폰 안에서 해요. 서버로 보내는 사진은 한 장도 없어요.', icon: Icons.verified_user_outlined),
+        const _Head('사진은 이 폰을\n떠나지 않아요', '얼굴 찾기와 장면 분석을 모두 폰 안에서 해요. 서버로 보내는 사진은 한 장도 없어요.', icon: Icons.verified_user_outlined, appName: true),
         const SizedBox(height: 32),
         row(Icons.wifi_off, '인터넷 없이도 동작', '비행기 모드에서도 검색돼요'),
         row(Icons.person_outline, '가입·로그인 없음', '설치하면 바로 시작해요'),
@@ -171,14 +177,14 @@ class PermissionsList extends StatelessWidget {
     if (RegExp('xiaomi|redmi|poco').hasMatch(m)) {
       return (
         title: '샤오미 폰: 자동 시작 켜기',
-        body: '목록에서 Photo Tracer의 "자동 시작"을 켜 주세요. 꺼져 있으면 폰을 다시 켠 뒤 밤 정리가 깨어나지 못해요.',
+        body: '목록에서 추억먹는하마의 "자동 시작"을 켜 주세요. 꺼져 있으면 폰을 다시 켠 뒤 밤 정리가 깨어나지 못해요.',
         button: '자동 시작 설정 열기',
       );
     }
     if (m == 'samsung') {
       return (
         title: '삼성 폰: 절전 예외 앱에 넣기',
-        body: '배터리 › 백그라운드 사용 제한 › "절전 예외 앱"에 Photo Tracer를 넣어 주세요. 며칠 앱을 안 열면 잠자기 앱이 되어 정리가 멈출 수 있어요.',
+        body: '배터리 › 백그라운드 사용 제한 › "절전 예외 앱"에 추억먹는하마를 넣어 주세요. 며칠 앱을 안 열면 잠자기 앱이 되어 정리가 멈출 수 있어요.',
         button: '설정 열기',
       );
     }

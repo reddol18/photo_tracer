@@ -1,4 +1,8 @@
-# Photo Tracer
+# 추억먹는하마
+
+(저장소 이름: photo_tracer)
+
+이름은 기억을 맡는 뇌 부위 해마(hippocampus)에서 하마(Hippo)를 따왔습니다. 추억(사진)을 먹어 치우며 정리하는 하마라는 뜻입니다. 같은 작명을 쓴 앱으로 [용어먹는하마](https://github.com/reddol18/dev_keyword_test)가 있습니다.
 
 폰 안의 사진을 인터넷 없이 기기에서 분석해, 가족 구성원·일(구간)별로 묶고 "작년 여름 아이랑 바닷가"처럼 한국어로 찾는 Android 앱입니다.
 

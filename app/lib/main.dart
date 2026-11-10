@@ -33,7 +33,7 @@ class PhotoTracerApp extends StatelessWidget {
   Widget build(BuildContext context) => ValueListenableBuilder(
         valueListenable: Look.current,
         builder: (context, look, _) => MaterialApp(
-          title: 'Photo Tracer',
+          title: '추억먹는하마',
           theme: buildTheme(look.accent, Brightness.light),
           darkTheme: buildTheme(look.accent, Brightness.dark),
           themeMode: look.mode,

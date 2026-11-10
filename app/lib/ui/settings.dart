@@ -135,7 +135,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ]),
       group('정보', [
         link('개인정보 처리방침', onTap: () => go(const PrivacyPage())),
-        link('오픈소스 라이선스', onTap: () => showLicensePage(context: context, applicationName: 'Photo Tracer')),
+        link('오픈소스 라이선스', onTap: () => showLicensePage(context: context, applicationName: '추억먹는하마')),
         link('진단 정보', sub: '정리 기록, 인물 찾기에서 뺀 이미지', onTap: () => go(const DiagnosticsPage())),
       ]),
       const SizedBox(height: 16),
