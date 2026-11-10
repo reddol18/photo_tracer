@@ -9,6 +9,8 @@ eval_data/
 !app/android/app/src/main/res/**/*.png
 # README 화면 그림: 예시 데이터로 그린 것만(app/test/readme_screens_test.dart). 폰 캡처는 넣지 않는다
 !docs/screens/*.png
+# 런처 아이콘 원본 카드·플레이 스토어 512 아이콘 (사용자가 만든 그림)
+!docs/icon/*.png
 
 # 모델 가중치 (다운로드 스크립트로 받음)
 models/
