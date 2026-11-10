@@ -25,7 +25,9 @@ class Who(private val ctx: Context) {
         const val MARGIN = 0.10f
         const val MAYBE = 0.35f
         const val NOBODY = -1L // face_marks.person: '아무도 아님'으로 뺀 얼굴
-        const val RULE = 6 // 붙이는 규칙이 바뀌면 올린다 → 앱을 열 때 한 번 다시 붙인다 (2: 사진당 한 얼굴, 캡처 제외, 3·4: 실사 아닌 이미지 제외)
+        const val RULE = 7 // 붙이는 규칙이 바뀌면 올린다 → 앱을 열 때 한 번 다시 붙인다 (2: 사진당 한 얼굴, 캡처 제외, 3·4: 실사 아닌 이미지 제외, 7: 흐린 작은 얼굴)
+        const val SMALL_SIDE = 64 // 검출 해상도에서 짧은 변이 이보다 작은 얼굴만 선명도를 본다(#9)
+        const val BLUR = 7.0 // 선명도가 이보다 낮은 작은 얼굴은 '확인 필요'로만(#9)
         const val FACE_MAX = 2048 // 얼굴 조각을 자를 때 사진을 읽는 최대 크기
         private const val COVER_CANDS = 5 // 대표 얼굴: 크게 담기는 정답 얼굴 몇 개 중에서 선명도로 고른다
 
@@ -279,8 +281,34 @@ class Who(private val ctx: Context) {
             }
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
-        Log.i("PhotoTracer", "인물 ${people.size}명 다시 붙임, ${System.currentTimeMillis() - t0}ms")
+        val blurred = demoteBlurred()
+        Log.i("PhotoTracer", "인물 ${people.size}명 다시 붙임, 흐린 작은 얼굴 $blurred 개는 확인 필요로, ${System.currentTimeMillis() - t0}ms")
         try { exportFound() } catch (e: Exception) { Log.w("PhotoTracer", "who_found.csv 실패: $e") }
+    }
+
+    /**
+     * 흐린 작은 얼굴은 '찾음'으로 붙이지 않고 '확인 필요'로 둔다(#9). 반환: 내린 얼굴 수.
+     * 폰에서 정답 얼굴을 줄여 시험(debugSmall)하니 32px까지 줄여도 다른 사람으로 붙지 않았다 — 크기만으로는 틀리지 않는다.
+     * 실제로 작은데 '찾음'이 된 얼굴 183개(48px 미만)를 잘라 보니, 틀린 것은 얼굴인지 알아볼 수 없는 흐린 덩어리였고
+     * 흐린 정답 얼굴과 0.6~0.75로 닮아 붙었다. 선명도(sharpness) 7 미만에 그런 것 35개가 모두 들었고, 알아볼 만한 얼굴은 1개뿐이었다.
+     * 큰 얼굴은 흐려도 덩어리가 아니라서 SMALL_SIDE 미만만 잰다(선명도는 faces.sharp에 한 번만 재 둔다).
+     */
+    private fun demoteBlurred(): Int {
+        val side = "MIN(f.w * p.w, f.h * p.h) * MIN(1.0, ${Models.DETECT_LONG_SIDE}.0 / MAX(p.w, p.h, 1))"
+        val cands = ArrayList<Triple<Long, Long, Double?>>() // 얼굴, 인물, 잰 선명도
+        db.readableDatabase.rawQuery("SELECT f.id, f.who, f.sharp FROM faces f JOIN photos p ON p.id = f.photo_id WHERE f.who IS NOT NULL AND $side < $SMALL_SIDE " +
+                "AND f.id NOT IN (SELECT face_id FROM face_marks WHERE ok = 1)", null).use {
+            while (it.moveToNext()) cands.add(Triple(it.getLong(0), it.getLong(1), if (it.isNull(2)) null else it.getDouble(2)))
+        }
+        val w = db.writableDatabase
+        var n = 0
+        for ((id, person, s) in cands) {
+            val sharp = s ?: sharpness(id).also { v -> w.execSQL("UPDATE faces SET sharp = ? WHERE id = ?", arrayOf<Any>(v, id)) }
+            if (sharp >= BLUR) continue
+            w.execSQL("UPDATE faces SET who = NULL, maybe = ? WHERE id = ?", arrayOf<Any>(person, id))
+            n++
+        }
+        return n
     }
 
     /**
@@ -333,6 +361,106 @@ class Who(private val ctx: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * 개발용(#9): 얼굴 크기에 따라 인물 찾기가 얼마나 틀리나. 앱 폴더에 small_eval.txt(내용 상관없음)를 넣으면,
+     * 크게 찍힌 정답 얼굴(검출 해상도에서 짧은 변 96px 이상)의 사진을 줄여 그 얼굴이 SIDES 픽셀이 되게 한 뒤
+     * 실제와 같이 검출·SFace·붙이는 규칙(THRESHOLD·MARGIN·MAYBE)을 적용한다. 정답은 그 얼굴 자신과 같은 사진의 정답을 뺀다.
+     * small_eval.csv: 정답 얼굴 id, 인물, 원래 크기, 줄인 크기, 검출됨, 1등 인물, 1등·2등 유사도, 결과(found/maybe/none).
+     * 그리고 지금 '찾음'·'확인 필요' 얼굴의 크기 분포를 small_found.csv로. 번호와 점수만 나간다. 정리 화면을 열 때(scan) 확인한다.
+     */
+    fun debugSmall() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val trigger = File(dir, "small_eval.txt").takeIf { it.exists() } ?: return
+        trigger.delete()
+        val side = "MIN(f.w * p.w, f.h * p.h) * MIN(1.0, ${Models.DETECT_LONG_SIDE}.0 / MAX(p.w, p.h, 1))"
+        class R(val face: Long, val photo: Long, val person: Long, val side: Double, val box: FloatArray, val v: FloatArray)
+        val refs = ArrayList<R>()
+        db.readableDatabase.rawQuery("""SELECT f.id, f.photo_id, m.person, $side, f.x, f.y, f.w, f.h, f.v
+                FROM face_marks m JOIN faces f ON f.id = m.face_id JOIN photos p ON p.id = f.photo_id WHERE m.ok = 1""", null).use {
+            while (it.moveToNext()) refs.add(R(it.getLong(0), it.getLong(1), it.getLong(2), it.getDouble(3),
+                floatArrayOf(it.getFloat(4), it.getFloat(5), it.getFloat(6), it.getFloat(7)), Db.floats(it.getBlob(8))))
+        }
+        // 등록 안 한 사람(남): 얼굴 5개 이상인 자동 묶음 중 정답·찾음·확인 필요가 하나도 없는 묶음의 큰 얼굴(person -1).
+        // 이 얼굴이 줄었을 때 가족으로 붙으면 잘못 붙은 것이다(#4에서 본 문제)
+        val strangers = ArrayList<R>()
+        db.readableDatabase.rawQuery("""SELECT f.id, f.photo_id, -1, $side, f.x, f.y, f.w, f.h, f.v
+                FROM faces f JOIN photos p ON p.id = f.photo_id
+                WHERE COALESCE(p.fake, 0) = 0 AND $side >= 96 AND f.person IN (
+                    SELECT person FROM faces WHERE person IS NOT NULL GROUP BY person
+                    HAVING COUNT(*) >= 5 AND SUM(who IS NOT NULL OR maybe IS NOT NULL
+                        OR id IN (SELECT face_id FROM face_marks WHERE ok = 1)) = 0)
+                ORDER BY f.id LIMIT 150""", null).use {
+            while (it.moveToNext()) strangers.add(R(it.getLong(0), it.getLong(1), -1, it.getDouble(3),
+                floatArrayOf(it.getFloat(4), it.getFloat(5), it.getFloat(6), it.getFloat(7)), Db.floats(it.getBlob(8))))
+        }
+        val models = Models(ctx)
+        val detector = models.detector()
+        val sface = models.session(Models.SFACE)
+        val out = StringBuilder("face,person,side,target,detected,best,sim,second,result\n")
+        val t0 = System.currentTimeMillis()
+        try {
+            for (r in refs.filter { it.side >= 96 } + strangers) {
+                val bmp = models.decode(r.photo) ?: continue
+                for (target in SIDES) {
+                    val k = target / r.side
+                    val small = Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt().coerceAtLeast(1), (bmp.height * k).toInt().coerceAtLeast(1), true)
+                    // 줄인 사진에서 이 정답 얼굴과 가장 많이 겹치는 검출 얼굴
+                    val hit = models.faces(detector, small).maxByOrNull { f -> iou(f.boundingBox, r.box, small.width, small.height) }
+                        ?.takeIf { iou(it.boundingBox, r.box, small.width, small.height) >= 0.3f }
+                    if (hit == null) { out.append("${r.face},${r.person},${r.side.toInt()},$target,0,,,,none\n"); small.recycle(); continue }
+                    val v = models.embedFace(sface, small, hit)
+                    small.recycle()
+                    val sims = refs.filter { it.photo != r.photo }.groupBy { it.person }
+                        .map { (p, rs) -> p to rs.maxOf { dot(v, it.v) } }.sortedByDescending { it.second }
+                    val (best, s) = sims[0]; val second = sims.getOrNull(1)?.second ?: -1f
+                    val result = when { s >= THRESHOLD && s - second >= MARGIN -> "found"; s >= MAYBE && s > second -> "maybe"; else -> "none" }
+                    out.append("${r.face},${r.person},${r.side.toInt()},$target,1,$best,${"%.3f".format(s)},${"%.3f".format(second)},$result\n")
+                }
+                bmp.recycle()
+            }
+        } finally { detector.close(); sface.close() }
+        File(dir, "small_eval.csv").apply { writeText(out.toString()); setReadable(true, false) }
+        // 지금 붙은 얼굴의 크기 분포(찾음 who / 확인 필요 maybe)
+        File(dir, "small_found.csv").bufferedWriter().use { o ->
+            o.write("face,kind,person,sim,side\n")
+            db.readableDatabase.rawQuery("""SELECT f.id, CASE WHEN f.who IS NOT NULL THEN 'found' ELSE 'maybe' END, COALESCE(f.who, f.maybe), f.who_sim, $side
+                    FROM faces f JOIN photos p ON p.id = f.photo_id
+                    WHERE (f.who IS NOT NULL OR f.maybe IS NOT NULL) AND f.id NOT IN (SELECT face_id FROM face_marks WHERE ok = 1)""", null).use {
+                while (it.moveToNext()) o.write("${it.getLong(0)},${it.getString(1)},${it.getLong(2)},${"%.3f".format(it.getFloat(3))},${it.getDouble(4).toInt()}\n")
+            }
+        }
+        File(dir, "small_found.csv").setReadable(true, false)
+        Log.i("PhotoTracer", "small_eval: 정답 얼굴 ${refs.count { it.side >= 96 }}개 + 남 ${strangers.size}개 × 크기 ${SIDES.size}가지, ${System.currentTimeMillis() - t0}ms")
+    }
+
+    private val SIDES = listOf(32.0, 40.0, 48.0, 64.0, 96.0)
+
+    /**
+     * 개발용(#9): 앱 폴더에 face_crops.txt(줄마다 얼굴 id)를 넣으면 그 얼굴을 원본에서 크게 읽어 잘라
+     * face_crops/<id>.jpg(128px)로 쓰고 txt를 지운다. PC 썸네일(160px)로는 작은 얼굴이 몇 픽셀이라 맞는지 볼 수 없어서.
+     * 가족 얼굴이라 PC의 eval_data(공개 안 함)에만 둔다. 정리 화면을 열 때(scan) 확인한다.
+     */
+    fun debugFaceCrops() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val list = File(dir, "face_crops.txt").takeIf { it.exists() } ?: return
+        val out = File(dir, "face_crops").apply { mkdirs() }
+        for (id in list.readLines().mapNotNull { it.trim().toLongOrNull() }) {
+            val bmp = try { faceBitmap(id, 128) } catch (e: Exception) { null } ?: continue
+            File(out, "$id.jpg").outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            bmp.recycle()
+        }
+        list.delete()
+        Log.i("PhotoTracer", "face_crops: ${out.list()?.size}개")
+    }
+
+    /** 검출 상자(픽셀)와 저장된 상자(0~1)의 겹침 */
+    private fun iou(b: Rect, n: FloatArray, w: Int, h: Int): Float {
+        val ax = b.left.toFloat() / w; val ay = b.top.toFloat() / h; val aw = b.width().toFloat() / w; val ah = b.height().toFloat() / h
+        val ix = maxOf(0f, minOf(ax + aw, n[0] + n[2]) - maxOf(ax, n[0])); val iy = maxOf(0f, minOf(ay + ah, n[1] + n[3]) - maxOf(ay, n[1]))
+        val inter = ix * iy
+        return inter / (aw * ah + n[2] * n[3] - inter)
     }
 
     private fun dot(a: FloatArray, b: FloatArray): Float { var s = 0f; for (d in a.indices) s += a[d] * b[d]; return s }

@@ -80,6 +80,8 @@ class MainActivity : FlutterActivity() {
                     worker.execute { try { Search(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "search_eval 실패: $e") } }
                     worker.execute { try { Search(this).debugPeople() } catch (e: Exception) { Log.w("PhotoTracer", "people_eval 실패: $e") } }
                     clusterer.execute { try { People(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "cluster_eval 실패: $e") } }
+                    clusterer.execute { try { Who(this).debugSmall() } catch (e: Exception) { Log.w("PhotoTracer", "small_eval 실패: $e") } }
+                    clusterer.execute { try { Who(this).debugFaceCrops() } catch (e: Exception) { Log.w("PhotoTracer", "face_crops 실패: $e") } }
                     result.success(null)
                 }
                 "setNight" -> { IndexWorker.setNight(this, call.argument<Boolean>("on") == true); result.success(null) }
