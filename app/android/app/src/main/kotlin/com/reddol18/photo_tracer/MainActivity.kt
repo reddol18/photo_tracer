@@ -165,6 +165,31 @@ class MainActivity : FlutterActivity() {
                     out
                 }
                 "exportQueryVectors" -> bg { Search(this).exportQueryVectors() }
+                // 화면 설정(대표 색·화면 모드·처음 안내 봄·최근 검색어): 문자열 하나씩
+                "pref" -> bg { getSharedPreferences("ui", MODE_PRIVATE).getString(call.argument<String>("key"), null) }
+                "setPref" -> bg {
+                    val key = call.argument<String>("key")!!
+                    val v = call.argument<String>("value")
+                    getSharedPreferences("ui", MODE_PRIVATE).edit().apply { if (v == null) remove(key) else putString(key, v) }.apply()
+                }
+                // 홈: 순간(시간 구간) 목록과 한 순간의 사진, 인물을 고르면 그 인물만
+                "moments" -> bg {
+                    Moments(this).list(call.argument<Number>("offset")?.toInt() ?: 0, call.argument<Number>("limit")?.toInt() ?: 40,
+                        call.argument<Number>("person")?.toLong())
+                }
+                "momentPhotos" -> bg { Moments(this).photos(call.argument<Number>("id")!!.toLong(), call.argument<Number>("person")?.toLong()) }
+                "reviewQueue" -> bg { Moments(this).review(call.argument<Number>("limit")?.toInt() ?: 100) }
+                // 사진 크게 보기의 공유·갤러리에서 열기: 사진 원본은 다른 앱이 MediaStore 주소로 읽는다
+                "share", "openInGallery" -> {
+                    val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, call.argument<Number>("id")!!.toLong())
+                    val intent = if (call.method == "share")
+                        Intent.createChooser(Intent(Intent.ACTION_SEND).setType("image/*").putExtra(Intent.EXTRA_STREAM, uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null)
+                    else Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    try { startActivity(intent); result.success(true) } catch (e: Exception) {
+                        Log.w("PhotoTracer", "${call.method} 못 엶", e); result.success(false)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
