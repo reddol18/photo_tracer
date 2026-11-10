@@ -516,14 +516,17 @@ class _PeoplePageState extends State<PeoplePage> {
   List<Map<String, dynamic>>? people;
   List<Map<String, dynamic>>? clusters;
   final selected = <int>[]; // 길게 눌러 고른 등록 인물(합치기). 처음 고른 인물로 합친다
+  String gender = ''; // 사용자 성별: '남', '여', ''(안 정함)
 
   Future<void> load() async {
     final p = await channel.invokeMethod('people');
     final c = await channel.invokeMethod('persons');
     final f = await channel.invokeMethod('fakeCounts');
     final i = Map<String, dynamic>.from(await channel.invokeMethod('clusterInfo') as Map);
+    final g = await channel.invokeMethod<String>('gender');
     if (mounted) {
       setState(() {
+        gender = g ?? '';
         people = (p as List).map((e) => Map<String, dynamic>.from(e)).toList();
         clusters = (c as List).map((e) => Map<String, dynamic>.from(e)).toList();
         fakes = (f as List).cast<int>();
@@ -668,6 +671,29 @@ class _PeoplePageState extends State<PeoplePage> {
                 title: Text('${selected.length}명 고름'),
                 trailing: FilledButton(onPressed: selected.length >= 2 ? merge : null, child: const Text('합치기')),
               ),
+      ),
+      // 사용자 성별: 검색어 관계 풀이에서 맞지 않는 후보를 뺀다(#10, 예: 남자면 '엄마 입장의 딸'은 내가 아니다)
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Row(children: [
+            Expanded(child: Text('내 성별 (검색어 관계 풀이용)', style: Theme.of(context).textTheme.bodySmall)),
+            SegmentedButton<String>(
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(value: '남', label: Text('남')),
+                ButtonSegment(value: '여', label: Text('여')),
+                ButtonSegment(value: '', label: Text('안 정함')),
+              ],
+              selected: {gender},
+              onSelectionChanged: (s) async {
+                await channel.invokeMethod('setGender', {'g': s.first.isEmpty ? null : s.first});
+                setState(() => gender = s.first);
+              },
+            ),
+          ]),
+        ),
       ),
       SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 16),

@@ -53,4 +53,24 @@ object Kin {
     val FROM: Map<String, Map<String, List<String>>> = mapOf(
         "딸" to CHILD, "아들" to CHILD, "아내" to SPOUSE, "남편" to SPOUSE,
         "엄마" to PARENT + mapOf("남편" to listOf("아빠")), "아빠" to PARENT + mapOf("아내" to listOf("엄마")))
+
+    // 말이 가리키는 사람의 성별(#10)
+    private val FEMALE = setOf("엄마", "딸", "할머니", "언니", "누나", "손녀", "며느리", "아내", "장모", "시어머니")
+    private val MALE = setOf("아빠", "아들", "할아버지", "오빠", "형", "손자", "사위", "남편", "장인", "시아버지")
+    // 사용자 기준 관계 중 사용자가 남자여야(아내 쪽 가족) / 여자여야(남편 쪽 가족) 있는 것
+    private val IF_MALE = setOf("아내", "장모", "장인")
+    private val IF_FEMALE = setOf("남편", "시어머니", "시아버지")
+
+    /**
+     * 사용자 성별("남"/"여", 모르면 null)로 입장 풀이 후보를 거른다(#10): word를 사용자 기준 관계 target으로 풀어도 되나.
+     *   target이 '나'면 word가 가리키는 성별이 사용자와 같아야 한다(남자에게 엄마 입장의 딸은 내가 아니다).
+     *   아내·장모·장인은 남자, 남편·시어머니·시아버지는 여자일 때만.
+     */
+    fun fits(gender: String?, word: String, target: String): Boolean = when {
+        gender == null -> true
+        target == "나" -> !(gender == "남" && word in FEMALE) && !(gender == "여" && word in MALE)
+        target in IF_MALE -> gender == "남"
+        target in IF_FEMALE -> gender == "여"
+        else -> true
+    }
 }

@@ -134,7 +134,8 @@ class Search(private val ctx: Context) {
      *   고른 조합으로 함께 나온 사진이 없으면, 바꾼 적 없는 낱말은 사진이 있는 다른 풀이로 바꾼다.
      * 결과: 인물 낱말들, 남은 검색어
      */
-    private fun people(query: String, picks: Map<String, List<Long>>): Pair<List<Word>, String> {
+    private fun people(query: String, picks: Map<String, List<Long>>, gender: String? = prefs.getString("gender", null),
+                       remember: Boolean = true): Pair<List<Word>, String> {
         class P(val id: Long, val name: String, val kin: String?)
         val ps = ArrayList<P>()
         db.readableDatabase.rawQuery("SELECT id, name, relation FROM people", null).use {
@@ -169,8 +170,9 @@ class Search(private val ctx: Context) {
                 val oKins = o.direct.firstOrNull()?.ids?.mapNotNull { id -> ps.first { it.id == id }.kin }?.toSet() ?: continue
                 for (ok in oKins) for (k in Kin.FROM[ok]?.get(t.kin) ?: emptyList()) {
                     if (t.direct.isNotEmpty() && Kin.rank(ok) <= Kin.rank(t.kin)) continue // 위 세대 입장으로는 다시 풀지 않는다
+                    if (!Kin.fits(gender, t.kin, k)) continue // 사용자 성별과 안 맞는 풀이(#10)
                     val ids = withKin(k)
-                    if (ids.isNotEmpty() && rel.none { it.ids == ids }) rel.add(Reading(ids, "${label(ok)} 입장의 ${t.word} = 내 ${label(k)}"))
+                    if (ids.isNotEmpty() && rel.none { it.ids == ids }) rel.add(Reading(ids, "${label(ok)} 입장의 ${t.word} = ${if (k == "나") "나" else "내 ${label(k)}"}"))
                 }
             }
             val names = t.direct.filter { !it.note.startsWith("내 ") }
@@ -182,6 +184,7 @@ class Search(private val ctx: Context) {
         val others = { w: Word -> words.filter { it !== w }.joinToString(",") { it.word } }
         val fixed = HashSet<Word>()
         for (w in words) {
+            if (!remember) break
             val key = "${w.word}|${others(w)}"
             val pick = picks[w.word]?.toSet()?.also { prefs.edit().putString(key, it.joinToString(",")).apply() }
                 ?: prefs.getString(key, null)?.split(",")?.mapNotNull { it.toLongOrNull() }?.toSet()
@@ -202,6 +205,30 @@ class Search(private val ctx: Context) {
     /** 사용자가 바꾼 인물 풀이(people)와, 칩 안내를 본 적 있는지 */
     private val prefs = ctx.getSharedPreferences("search_picks", Context.MODE_PRIVATE)
     fun hintSeen() = prefs.edit().putBoolean("hint_seen", true).apply()
+
+    /**
+     * 개발용(#5·#10): 앱 폴더에 people_eval.txt(줄마다 검색어를 UTF-8 16진수로)를 넣으면 성별 안 정함·남·여 각각으로
+     * 인물 낱말 풀이를 people_eval.csv(검색어 번호, 성별, 낱말, 고른 인물 id, 후보 id와 풀이)로 쓰고 txt를 지운다.
+     * 기억해 둔 선택과 사용자의 성별 설정은 쓰지도 바꾸지도 않는다. id와 관계 낱말만 나간다. 정리 화면을 열 때(scan) 확인한다.
+     */
+    fun debugPeople() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val list = File(dir, "people_eval.txt").takeIf { it.exists() } ?: return
+        val queries = list.readLines().filter { it.isNotBlank() }
+            .map { h -> String(ByteArray(h.trim().length / 2) { h.trim().substring(2 * it, 2 * it + 2).toInt(16).toByte() }, Charsets.UTF_8) }
+        val out = StringBuilder("query,gender,word,chosen,cands\n")
+        for ((k, q) in queries.withIndex()) for (g in listOf(null, "남", "여")) {
+            val (words, _) = people(q, emptyMap(), g, remember = false)
+            for (w in words) out.append("$k,${g ?: "-"},${w.word},${w.chosen.joinToString(" ")},")
+                .append(w.cands.joinToString(" | ") { "${it.ids.joinToString(" ")}:${it.note}" }).append("\n")
+        }
+        File(dir, "people_eval.csv").apply { writeText(out.toString()); setReadable(true, false) }
+        list.delete()
+    }
+
+    /** 사용자 성별("남"/"여", 정하지 않으면 null) — 관계 풀이 후보를 거른다(Kin.fits, #10) */
+    fun gender(): String? = prefs.getString("gender", null)
+    fun setGender(g: String?) = prefs.edit().apply { if (g == null) remove("gender") else putString("gender", g) }.apply()
 
     /** 인물의 사진: 정답 + 찾음(실사 아닌 이미지는 빼고). '확인 필요'는 넣지 않는다 */
     private fun photosOf(ids: Set<Long>): Set<Long> {

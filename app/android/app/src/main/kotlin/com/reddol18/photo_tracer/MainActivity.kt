@@ -78,6 +78,7 @@ class MainActivity : FlutterActivity() {
                 "scan" -> {
                     if (photosGranted()) { if (IndexWorker.nightOn(this)) IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     worker.execute { try { Search(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "search_eval 실패: $e") } }
+                    worker.execute { try { Search(this).debugPeople() } catch (e: Exception) { Log.w("PhotoTracer", "people_eval 실패: $e") } }
                     clusterer.execute { try { People(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "cluster_eval 실패: $e") } }
                     result.success(null)
                 }
@@ -90,6 +91,8 @@ class MainActivity : FlutterActivity() {
                     Search(this).search(call.argument<String>("q") ?: "", picks)
                 }
                 "searchHintSeen" -> bg { Search(this).hintSeen() }
+                "gender" -> bg { Search(this).gender() }
+                "setGender" -> bg { Search(this).setGender(call.argument<String>("g")) }
                 "segmentPhotos" -> bg {
                     ids(db, "SELECT id FROM photos WHERE segment = ? ORDER BY taken_at", call.argument<Number>("id").toString())
                 }
