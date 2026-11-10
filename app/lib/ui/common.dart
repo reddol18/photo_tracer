@@ -76,13 +76,14 @@ ThemeData buildTheme(Color accent, Brightness b) {
       style: FilledButton.styleFrom(
           minimumSize: const Size(0, 52),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          // 버튼 글자는 테마 글꼴을 물려받게 기본 글자 모양에서 고친다 (새 TextStyle은 글꼴이 빠진다)
+          textStyle: base.textTheme.labelLarge?.copyWith(fontSize: 16, fontWeight: FontWeight.w700)),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
           minimumSize: const Size(0, 48),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          textStyle: base.textTheme.labelLarge?.copyWith(fontSize: 15, fontWeight: FontWeight.w700)),
     ),
     chipTheme: base.chipTheme.copyWith(shape: const StadiumBorder(), side: BorderSide(color: line)),
     bottomSheetTheme: BottomSheetThemeData(backgroundColor: card, surfaceTintColor: Colors.transparent, showDragHandle: true),
