@@ -203,6 +203,29 @@ class MomentCard extends StatelessWidget {
     final n = m['n'] as int;
     final title = fmtRange(m['start'] as int, m['end'] as int);
     const gap = 3.0;
+    final sub = '사진 ${fmtInt(n)}장${who.isEmpty ? '' : ' · ${who.join(', ')}'}';
+    final cs = Theme.of(context).colorScheme;
+    // 한 장뿐인 순간(지나가다 찍은 사진·흔들린 사진이 많다)은 한 줄로 작게: 큰 카드가 목록을 차지하지 않게
+    if (n == 1 && covers.length == 1) {
+      return Card(
+        child: InkWell(
+          onTap: () => showPhoto(context, covers.first),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(children: [
+              ClipRRect(borderRadius: BorderRadius.circular(10), child: SizedBox(width: 64, height: 64, child: Thumb(covers.first))),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                  Text(sub, style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+                ]),
+              ),
+            ]),
+          ),
+        ),
+      );
+    }
     Widget collage;
     if (covers.length >= 3) {
       collage = SizedBox(

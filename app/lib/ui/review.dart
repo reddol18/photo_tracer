@@ -112,34 +112,38 @@ class _ReviewPageState extends State<ReviewPage> {
                       const SizedBox(height: 6),
                       Text('닮았지만 확실하지 않은 얼굴이에요', style: TextStyle(color: cs.onSurfaceVariant)),
                       const SizedBox(height: 20),
+                      // 얼굴끼리 크게 나란히: 사진 속 얼굴은 작아서 사진만 보고는 알아보기 어렵다
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+                        Column(children: [
+                          FaceAvatar(key: ValueKey('q${f['face']}'), face: f['face'] as int, size: 116),
+                          const SizedBox(height: 6),
+                          Text('이 얼굴', style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+                        ]),
+                        Icon(Icons.compare_arrows, color: cs.onSurfaceVariant),
+                        Column(children: [
+                          FaceAvatar(face: p['face'] as int?, label: p['name'] as String, size: 116),
+                          const SizedBox(height: 6),
+                          Text('등록한 얼굴', style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+                        ]),
+                      ]),
+                      const SizedBox(height: 16),
                       Expanded(
-                        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           Expanded(
-                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Expanded(
-                                child: Center(
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(18),
-                                    child: FacePhoto(f['photo'] as int,
-                                        key: ValueKey(f['face']),
-                                        faces: [{...f, 'id': f['face'], 'who': null, 'maybe': f['person']}],
-                                        names: const {},
-                                        who: f['person'] as int),
-                                  ),
-                                ),
+                            child: Center(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(16),
+                                child: FacePhoto(f['photo'] as int,
+                                    key: ValueKey(f['face']),
+                                    faces: [{...f, 'id': f['face'], 'who': null, 'maybe': f['person']}],
+                                    names: const {},
+                                    who: f['person'] as int),
                               ),
-                              const SizedBox(height: 6),
-                              Text(f['taken'] == null ? '찍은 날 모름' : fmtDay(f['taken'] as int, year: true),
-                                  style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
-                            ]),
+                            ),
                           ),
-                          const SizedBox(width: 12),
-                          Column(mainAxisSize: MainAxisSize.min, children: [
-                            FaceAvatar(face: p['face'] as int?, label: p['name'] as String, size: 72),
-                            const SizedBox(height: 6),
-                            Text('등록한 얼굴', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
-                            const SizedBox(height: 18),
-                          ]),
+                          const SizedBox(height: 6),
+                          Text(f['taken'] == null ? '찍은 날 모름' : fmtDay(f['taken'] as int, year: true),
+                              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
                         ]),
                       ),
                       const SizedBox(height: 20),

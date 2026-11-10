@@ -289,7 +289,7 @@ class FaceAvatar extends StatelessWidget {
                     ? Icon(Icons.person_outline, size: size * 0.45, color: cs.onSecondaryContainer)
                     : Text(label.characters.first, style: TextStyle(fontSize: size * 0.36, color: cs.onSecondaryContainer)),
               )
-            : Thumb(face!, face: true),
+            : Thumb(face!, face: true, size: size > 90 ? 320 : 256), // 크게 보이는 얼굴은 더 크게 잘라 온다
       ),
     );
   }
@@ -449,12 +449,21 @@ class Thumb extends StatelessWidget {
   final BoxFit fit;
 
   static final _cache = <String, Future<Uint8List?>>{};
+  static final _big = <int, Future<Uint8List?>>{}; // 크게 보기용 원본 축소본: 커서 몇 장만 둔다
+
+  /// 크게 보기용: 원본을 긴 변 1600px로 줄인 것 (썸네일은 크게 늘리면 뭉개진다)
+  static Future<Uint8List?> full(int id) {
+    final f = _big.remove(id) ?? channel.invokeMethod<Uint8List>('photo', {'id': id, 'max': 1600}).catchError((_) => bytes(id, 1024));
+    _big[id] = f;
+    if (_big.length > 8) _big.remove(_big.keys.first);
+    return f;
+  }
 
   static Future<Uint8List?> bytes(int id, int size, {bool face = false}) {
     final key = '$face/$id/$size';
     final hit = _cache.remove(key);
     final f = hit ?? (face
-        ? channel.invokeMethod<Uint8List>('faceThumb', {'id': id})
+        ? channel.invokeMethod<Uint8List>('faceThumb', {'id': id, 'size': size == 256 ? 160 : size})
         : channel.invokeMethod<Uint8List>('thumb', {'id': id, 'size': size}));
     _cache[key] = f; // 맨 뒤로 = 최근
     if (_cache.length > 400) _cache.remove(_cache.keys.first);
@@ -488,7 +497,7 @@ class _FacePhotoState extends State<FacePhoto> {
   late final Future<(Uint8List, ui.Image)?> image = _load();
 
   Future<(Uint8List, ui.Image)?> _load() async {
-    final data = await Thumb.bytes(widget.id, 1024);
+    final data = await Thumb.full(widget.id);
     return data == null ? null : (data, await decodeImageFromList(data));
   }
 

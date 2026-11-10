@@ -104,7 +104,8 @@ class _SearchPageState extends State<SearchPage> {
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             FaceAvatar(face: chosen.isEmpty ? null : people[chosen.first]?['face'] as int?, label: w['word'] as String, size: 26),
             const SizedBox(width: 6),
-            Text(w['word'] == whoLabel(chosen) ? whoLabel(chosen) : '${w['word']}: ${whoLabel(chosen)}'),
+            // 검색어가 이름 그대로면 "딸(딸)"처럼 겹치지 않게 이름만, 관계 말(엄마 등)이면 "엄마: 이름"
+            Text(whoLabel(chosen).startsWith(w['word'] as String) ? whoLabel(chosen) : '${w['word']}: ${whoLabel(chosen)}'),
             Icon(Icons.expand_more, size: 18, color: cs.onSurfaceVariant),
           ]),
         ),

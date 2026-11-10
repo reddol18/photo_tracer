@@ -70,6 +70,7 @@ class _OnboardingPageState extends State<OnboardingPage> with WidgetsBindingObse
                 children: const [_Promise(), _Permissions(), _NightGuide()],
               ),
             ),
+            const SizedBox(height: 16), // 길어서 스크롤되는 단계도 마지막 카드가 버튼에 붙지 않게
             FilledButton(
               style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(54)),
               onPressed: next,

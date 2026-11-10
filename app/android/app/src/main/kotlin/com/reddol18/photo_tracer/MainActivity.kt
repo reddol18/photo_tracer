@@ -5,6 +5,7 @@ import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -134,7 +135,8 @@ class MainActivity : FlutterActivity() {
                 "whoRejectAll" ->bg { Who(this).rejectAll(call.argument<Number>("photo")!!.toLong()) }
                 "whoMerge" ->bg { Who(this).merge(longs(call.argument("ids"))) }
                 "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
-                "faceThumb" -> bg(thumbs) { faceThumb(call.argument<Number>("id")!!.toLong()) }
+                "photo" -> bg(thumbs) { photo(call.argument<Number>("id")!!.toLong(), call.argument<Int>("max") ?: 1600) }
+                "faceThumb" -> bg(thumbs) { faceThumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 160) }
                 "photoInfo" -> bg {
                     val id = call.argument<Number>("id").toString()
                     // 얼굴 위치(사진 대비 0~1)와 묶인 인물 — 사진 위에 상자로 그린다
@@ -269,7 +271,21 @@ class MainActivity : FlutterActivity() {
         return jpeg(bmp)
     }
 
-    private fun faceThumb(faceId: Long): ByteArray? = Who(this).faceBitmap(faceId, 160)?.let { jpeg(it) }
+    /** 크게 보기용: 원본을 긴 변 max px로 줄여 읽는다(회전 정보 반영). 썸네일(loadThumbnail)은 크게 보면 뭉개진다 */
+    private fun photo(id: Long, max: Int): ByteArray {
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+        val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { dec, info, _ ->
+            val w = info.size.width
+            val h = info.size.height
+            val s = max.toDouble() / maxOf(w, h)
+            if (s < 1) dec.setTargetSize((w * s).toInt().coerceAtLeast(1), (h * s).toInt().coerceAtLeast(1))
+            dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE // compress하려면 소프트웨어 비트맵이어야 한다
+        }
+        return jpeg(bmp)
+    }
+
+    /** 얼굴 조각. 기본 160px, '이 사람 맞나요?'처럼 크게 보일 때는 더 크게 */
+    private fun faceThumb(faceId: Long, size: Int): ByteArray? = Who(this).faceBitmap(faceId, size.coerceIn(96, 384))?.let { jpeg(it) }
 
     private fun jpeg(bmp: Bitmap): ByteArray =
         ByteArrayOutputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it); bmp.recycle(); it.toByteArray() }

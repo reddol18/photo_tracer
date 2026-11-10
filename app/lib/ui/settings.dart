@@ -27,7 +27,7 @@ class _SettingsPageState extends State<SettingsPage> {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             SectionLabel(title),
-            Card(child: Column(children: [for (var i = 0; i < children.length; i++) ...[if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16), children[i]]])),
+            Card(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [for (var i = 0; i < children.length; i++) ...[if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16), children[i]]])),
           ]),
         );
     Widget link(String title, {String? sub, VoidCallback? onTap, Color? color}) => ListTile(
@@ -46,22 +46,22 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('대표 색', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
               const SizedBox(height: 12),
-              Wrap(spacing: 12, runSpacing: 12, children: [
+              // 한 줄에 6개: 좁은 폰에서도 줄이 넘어가지 않게 칸을 나눠 가진다. 어두운 화면에서 먹색이 묻히지 않게 옅은 테두리
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 for (var i = 0; i < Look.accents.length; i++)
                   Semantics(
                     label: Look.accents[i].$2,
                     selected: look.accentIndex == i,
                     button: true,
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
+                    child: InkResponse(
+                      radius: 26,
                       onTap: () => Look.set(accent: i),
                       child: Container(
-                        width: 44, height: 44,
+                        width: 40, height: 40,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: Look.accents[i].$1,
-                          border: Border.all(color: look.accentIndex == i ? Look.accents[i].$1 : Colors.transparent, width: 3),
-                          boxShadow: [BoxShadow(color: Theme.of(context).cardTheme.color!, spreadRadius: -6)],
+                          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.6)),
                         ),
                         child: look.accentIndex == i ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
                       ),

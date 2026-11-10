@@ -70,7 +70,7 @@ class _PhotoViewerState extends State<PhotoViewer> {
       builder: (context) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Text('사진 정보', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             Text(m['taken'] == null ? '찍은 날을 몰라요' : '찍은 날 ${fmtDay(m['taken'] as int, year: true)} ${fmtTime(m['taken'] as int)}'),

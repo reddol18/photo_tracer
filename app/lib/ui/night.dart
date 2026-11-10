@@ -36,6 +36,7 @@ part of '../main.dart';
 /// "약 3일 밤 남음" — 지난 밤 처리량을 모르면 첫날 안내
 String etaText(Status st) {
   if (st.allDone) return '완료';
+  if (!st.nightOn && !st.running) return '자동 정리를 켜면 이어서 해요';
   final n = st.nightsLeft;
   return n == null ? '처음 며칠 밤 걸려요' : n <= 1 ? '오늘 밤이면 끝나요' : '약 $n일 밤 남음';
 }
