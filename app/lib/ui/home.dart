@@ -230,7 +230,8 @@ class MomentCard extends StatelessWidget {
     if (covers.length >= 3) {
       collage = SizedBox(
         height: 180,
-        child: Row(children: [
+        // stretch: 사진이 칸 높이를 꽉 채우게 (기본 center면 세로 제약이 느슨해 가로 사진이 짧게 그려진다)
+        child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Expanded(flex: 2, child: Thumb(covers[0], size: 512)),
           const SizedBox(width: gap),
           Expanded(
@@ -255,7 +256,7 @@ class MomentCard extends StatelessWidget {
     } else {
       collage = SizedBox(
         height: covers.length == 1 ? 200 : 150,
-        child: Row(children: [
+        child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           for (var i = 0; i < covers.length; i++) ...[
             if (i > 0) const SizedBox(width: gap),
             Expanded(child: Thumb(covers[i], size: 512)),

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
@@ -265,10 +266,60 @@ class MainActivity : FlutterActivity() {
         db.readableDatabase.rawQuery("SELECT id FROM faces WHERE person = ? ORDER BY w * h DESC LIMIT 1", arrayOf(person.toString()))
             .use { if (it.moveToFirst()) it.getLong(0) else 0L }
 
+    /** 원본이 받은 썸네일보다 크지 않아 다시 읽을 필요가 없을 때 디코딩을 멈추려고 던진다 */
+    private class NotBigger : Exception()
+
+    /** MediaStore가 아는 원본 크기 (모르면 0x0) */
+    private fun mediaSize(id: Long): Pair<Int, Int> = try {
+        contentResolver.query(
+            ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id),
+            arrayOf(MediaStore.Images.Media.WIDTH, MediaStore.Images.Media.HEIGHT), null, null, null,
+        )?.use { c -> if (c.moveToFirst()) c.getInt(0) to c.getInt(1) else null } ?: (0 to 0)
+    } catch (e: Exception) { 0 to 0 }
+
+    /**
+     * 썸네일: 긴 변 size px. loadThumbnail(MediaStore 캐시·EXIF 썸네일)이 요청보다 많이 작게 주면(0.8배 미만)
+     * 원본이 그보다 클 때 ImageDecoder로 원본에서 긴 변 size로 줄여 다시 읽는다(회전 반영). 실패하면 받은 것 그대로.
+     * 원본 자체가 작은 사진은 그대로 둔다(로그로만 본다).
+     */
     private fun thumb(id: Long, size: Int): ByteArray {
+        val t0 = SystemClock.elapsedRealtime()
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-        val bmp = contentResolver.loadThumbnail(uri, Size(size, size), null)
-        return jpeg(bmp)
+        var bmp = contentResolver.loadThumbnail(uri, Size(size, size), null)
+        val got = maxOf(bmp.width, bmp.height)
+        var via = "thumb"
+        var orig = if (THUMB_LOG || got < size * 0.8) mediaSize(id) else 0 to 0
+        if (got < size * 0.8 && (maxOf(orig.first, orig.second) == 0 || maxOf(orig.first, orig.second) > got)) {
+            try {
+                bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { dec, info, _ ->
+                    val w = info.size.width
+                    val h = info.size.height
+                    orig = w to h
+                    if (maxOf(w, h) <= got) throw NotBigger() // 원본도 작다: 머리만 읽고 멈춘다
+                    val s = size.toDouble() / maxOf(w, h)
+                    if (s < 1) dec.setTargetSize((w * s).toInt().coerceAtLeast(1), (h * s).toInt().coerceAtLeast(1))
+                    dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE // compress하려면 소프트웨어 비트맵이어야 한다
+                }.also { bmp.recycle() }
+                via = "decode"
+            } catch (e: NotBigger) {
+            } catch (e: Exception) {
+                if (THUMB_LOG) Log.i(THUMB_TAG, "thumb id=$id decode 실패: ${e.javaClass.simpleName}")
+            }
+        }
+        val w = bmp.width
+        val h = bmp.height
+        val out = jpeg(bmp)
+        if (THUMB_LOG) Log.i(THUMB_TAG, "thumb id=$id req=$size got=${w}x$h orig=${orig.first}x${orig.second} via=$via ms=${SystemClock.elapsedRealtime() - t0}")
+        return out
+    }
+
+    companion object {
+        /**
+         * 썸네일 측정 로그(디버그·릴리스 모두). 보기: adb logcat -s PT-thumb
+         * 2026-11-12 레드미 실측: 89장 중 86장이 loadThumbnail이 요청의 0.8배 미만이라 원본에서 다시 읽음(평균 0.26초, 최대 0.48초), 원본이 작은 사진 0장. 다 재서 끔
+         */
+        const val THUMB_LOG = false
+        const val THUMB_TAG = "PT-thumb"
     }
 
     /** 크게 보기용: 원본을 긴 변 max px로 줄여 읽는다(회전 정보 반영). 썸네일(loadThumbnail)은 크게 보면 뭉개진다 */

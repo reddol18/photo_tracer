@@ -1,4 +1,6 @@
 // 화면마다 가짜 데이터로 그려 보아 레이아웃 오류(넘침·크기 없는 목록 등)가 없는지 본다. 폰 없이 PC에서 돈다.
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,9 +22,13 @@ final people = [
 ];
 
 Map<String, dynamic> scenario = {};
+final thumbSizes = <int, List<int>>{}; // 사진 id → 'thumb'로 요청받은 크기들
 
 Future<Object?> fake(MethodCall call) async {
   switch (call.method) {
+    case 'thumb':
+      thumbSizes.putIfAbsent((call.arguments['id'] as num).toInt(), () => []).add(call.arguments['size'] as int);
+      return scenario['thumb']; // 기본은 그림 없음 → 빈 칸으로 그린다
     case 'pref':
       return scenario['pref.${call.arguments['key']}'];
     case 'status':
@@ -35,6 +41,7 @@ Future<Object?> fake(MethodCall call) async {
     case 'people':
       return people;
     case 'moments':
+      if (scenario['moments'] != null) return call.arguments['offset'] == 0 ? scenario['moments'] : [];
       return [
         for (var i = 0; i < 5; i++)
           {'id': i, 'start': day - i * 86400000 * 9, 'end': day - i * 86400000 * 9 + 86400000, 'n': 48 - i * 10,
@@ -92,6 +99,7 @@ void main() {
 
   setUp(() {
     scenario = {};
+    thumbSizes.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, fake);
   });
 
@@ -125,6 +133,36 @@ void main() {
     expect(find.textContaining('사진 48장'), findsOneWidget);
     await t.tap(find.text('딸').first);
     await t.pump(const Duration(milliseconds: 100));
+    await cleanup(t);
+  });
+
+  testWidgets('홈: 콜라주 썸네일은 칸의 실제 픽셀에 맞는 크기로 요청한다', (t) async {
+    // 다른 시험과 캐시가 겹치지 않게 처음 쓰는 사진 id로
+    scenario['moments'] = [
+      {'id': 90, 'start': day, 'end': day + 3600000, 'n': 12, 'covers': [7700, 7701, 7702], 'people': []},
+    ];
+    await show(t, const Shell()); // 기기 픽셀 비율 3
+    expect(thumbSizes[7700], isNotNull);    expect(thumbSizes[7700]!.last, greaterThanOrEqualTo(768)); // 큰 칸: 폭 약 230dp × 3
+    expect(thumbSizes[7701]!.last, greaterThanOrEqualTo(256)); // 작은 칸도 단계 중 하나
+    expect(const [256, 384, 512, 768, 1024], containsAll([thumbSizes[7700]!.last, thumbSizes[7701]!.last]));
+    await cleanup(t);
+  });
+
+  testWidgets('홈: 2장 카드의 가로 사진도 칸 높이를 꽉 채운다', (t) async {
+    // 8x4 가로 PNG: 세로 제약이 느슨하면 비율대로 높이가 짧게 그려진다
+    scenario['thumb'] = base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXYxhwwMAAAACEAAHOfCFIAAAAAElFTkSuQmCC');
+    scenario['moments'] = [
+      {'id': 91, 'start': day, 'end': day + 3600000, 'n': 2, 'covers': [7800, 7801], 'people': []},
+    ];
+    await show(t, const Shell());
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200))); // 그림 풀기
+    await t.pump();
+    final images = find.byType(Image);
+    expect(images, findsNWidgets(2));
+    for (final e in images.evaluate()) {
+      expect(e.size!.height, 150); // 2장 카드 칸 높이
+    }
+    expect(thumbSizes[7800]!.last, 768); // 칸 약 178x150dp, 긴 변 × 3 = 532px → 768
     await cleanup(t);
   });
 

@@ -442,6 +442,8 @@ class _PhotosPageState extends State<PhotosPage> {
 }
 
 /// 썸네일은 Kotlin이 MediaStore에서 만들어 JPEG로 준다. 최근 것만 메모리에 둔다.
+/// 사진 썸네일은 칸의 실제 픽셀 크기(칸 긴 변 × 화면 밀도)에 맞는 단계로 요청한다 — `size`는 최소값.
+/// 얼굴 조각(`face: true`)은 `size` 그대로.
 class Thumb extends StatelessWidget {
   const Thumb(this.id, {super.key, this.size = 256, this.face = false, this.fit = BoxFit.cover});
   final int id;
@@ -449,7 +451,32 @@ class Thumb extends StatelessWidget {
   final bool face;
   final BoxFit fit;
 
+  /// 요청 크기 단계: 캐시 키가 흩어지지 않게 몇 가지로만 묶는다
+  static const steps = [256, 384, 512, 768, 1024];
+
+  /// 캐시 상한: JPEG 바이트 합계와 개수 (큰 썸네일이 늘어도 메모리가 과하지 않게)
+  static const _maxBytes = 60 << 20;
+  static const _maxCount = 400;
+
   static final _cache = <String, Future<Uint8List?>>{};
+  static final _bytesOf = <String, int>{}; // 받은 썸네일의 바이트 수 (다 받은 것만)
+  static int _total = 0;
+
+  /// 칸에 필요한 픽셀(px) 이상인 가장 작은 단계. min보다 작게는 고르지 않는다
+  static int pick(double px, int min) {
+    for (final s in steps) {
+      if (s >= px && s >= min) return s;
+    }
+    return min > steps.last ? min : steps.last;
+  }
+
+  static void _trim() {
+    while ((_total > _maxBytes || _cache.length > _maxCount) && _cache.length > 1) {
+      final k = _cache.keys.first; // 맨 앞 = 가장 오래 안 쓴 것
+      _cache.remove(k);
+      _total -= _bytesOf.remove(k) ?? 0;
+    }
+  }
   static final _big = <int, Future<Uint8List?>>{}; // 크게 보기용 원본 축소본: 커서 몇 장만 둔다
 
   /// 크게 보기용: 원본을 긴 변 1600px로 줄인 것 (썸네일은 크게 늘리면 뭉개진다)
@@ -467,17 +494,42 @@ class Thumb extends StatelessWidget {
         ? channel.invokeMethod<Uint8List>('faceThumb', {'id': id, 'size': size == 256 ? 160 : size})
         : channel.invokeMethod<Uint8List>('thumb', {'id': id, 'size': size}));
     _cache[key] = f; // 맨 뒤로 = 최근
-    if (_cache.length > 400) _cache.remove(_cache.keys.first);
+    if (hit == null) {
+      f.then((b) {
+        // 다 받았을 때 아직 캐시에 있으면 바이트 수를 센다 (그 사이 밀려났으면 세지 않는다)
+        if (b != null && identical(_cache[key], f) && !_bytesOf.containsKey(key)) {
+          _bytesOf[key] = b.length;
+          _total += b.length;
+          _trim();
+        }
+      }, onError: (_) {});
+    }
+    _trim();
     return f;
   }
 
-  @override
-  Widget build(BuildContext context) => FutureBuilder<Uint8List?>(
-        future: bytes(id, size, face: face),
+  Widget _image(BuildContext context, int s) => FutureBuilder<Uint8List?>(
+        future: bytes(id, s, face: face),
         builder: (context, snap) => snap.data == null
             ? Container(color: Theme.of(context).colorScheme.surfaceContainerHighest)
+            // 받은 그림이 이미 칸 픽셀에 맞으므로 cacheWidth로 줄여 풀 필요는 없다
             : Image.memory(snap.data!, fit: fit, gaplessPlayback: true),
       );
+
+  @override
+  Widget build(BuildContext context) {
+    if (face) return _image(context, size);
+    return LayoutBuilder(builder: (context, box) {
+      final w = box.hasBoundedWidth ? box.maxWidth : 0.0;
+      final h = box.hasBoundedHeight ? box.maxHeight : 0.0;
+      final side = w > h ? w : h;
+      // 크기가 정해지지 않았으면(무한 제약) 지금 기본값 그대로
+      if (side <= 0) return _image(context, size);
+      final img = _image(context, pick(side * MediaQuery.devicePixelRatioOf(context), size));
+      // 칸이 정해져 있으면 꽉 채운다: 제약이 느슨해도(Row 기본 center 등) 그림이 비율대로 줄어 빈 곳이 남지 않게
+      return w > 0 && h > 0 ? SizedBox(width: w, height: h, child: img) : img;
+    });
+  }
 }
 
 /// 사진 위에 얼굴 상자. 얼굴 위치는 사진 대비 0~1이라, 디코드한 사진 비율대로 자리를 잡고 그 위에 그린다
