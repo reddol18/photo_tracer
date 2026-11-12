@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.time.LocalDate
 
 /**
  * 자연어 검색. 검색어 → 토크나이저 → 텍스트 모델 → 768차원 벡터, 사진 벡터와 코사인으로 순위를 매긴다.
@@ -24,6 +25,7 @@ import java.nio.ByteOrder
 class Search(private val ctx: Context) {
     companion object {
         const val TOP = 60
+        private const val PERIOD_TOP = 300 // 시기만 검색할 때 보일 칸 수(#16)
         private const val POOL = 150 // debugEval: 방식별 상위 몇 칸을 후보로 내보낼지
         const val SOFT_PERSON = 0f // 장면 검색에서 뒤로 미룰 만든 이미지 점수(rank)
         // models/siglip/tags.json (export_siglip.py가 모델에서 읽은 값)
@@ -62,22 +64,117 @@ class Search(private val ctx: Context) {
     }
 
     /** 결과: kind(segment|photo), id, cover(보여 줄 사진), n(장 수), date, date_source, score(코사인), conf(0~1). 흔한 방향을 뺀 점수 높은 순 */
-    fun search(query: String, picks: Map<String, List<Long>> = emptyMap()): Map<String, Any?> {
+    fun search(query: String, picks: Map<String, List<Long>> = emptyMap(), today: LocalDate = LocalDate.now()): Map<String, Any?> {
         val t0 = System.nanoTime()
-        val (words, rest) = people(query, picks)
-        if (words.isNotEmpty()) return searchPeople(words.map { it.chosen }, words.map { it.word }, rest, t0) + mapOf(
-            // 화면의 인물 칩: 낱말, 고른 인물, 바꾸기 후보(풀이 포함), 칩 안내를 보일지
-            "words" to words.map { w -> mapOf("word" to w.word, "chosen" to w.chosen.toList(),
-                "cands" to w.cands.map { mapOf("ids" to it.ids.toList(), "note" to it.note) }) },
-            "hint" to !prefs.getBoolean("hint_seen", false))
-        val q = templated(query)
+        val (words, rest0) = people(query, picks)
+        // 시기 말(#16): 읽은 낱말은 장면 검색어에서 빼고, 기간으로 결과를 거른다
+        val toks = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val hit = When.parse(toks, today, { i -> words.any { isWord(toks[i], it.word) } }, FILLER)
+        val (period, whenInfo) = hit?.let { whenOf(it, toks, words, picks) } ?: (null to null)
+        val used = hit?.tokens?.toSet() ?: emptySet()
+        val extra: Map<String, Any?> = if (whenInfo != null) mapOf("when" to whenInfo) else emptyMap()
+        if (words.isNotEmpty()) {
+            val rest = if (hit == null) rest0 else dropTokens(rest0, used.map { toks[it] })
+            return searchPeople(words.map { it.chosen }, words.map { it.word }, rest, t0, period) + mapOf(
+                // 화면의 인물 칩: 낱말, 고른 인물, 바꾸기 후보(풀이 포함), 칩 안내를 보일지
+                "words" to words.map { w -> mapOf("word" to w.word, "chosen" to w.chosen.toList(),
+                    "cands" to w.cands.map { mapOf("ids" to it.ids.toList(), "note" to it.note) }) },
+                "hint" to !prefs.getBoolean("hint_seen", false)) + extra
+        }
+        val scene = toks.filterIndexed { i, _ -> i !in used }
+        if (hit != null && scene.all { it in FILLER }) { // 시기만: 그 기간의 순간을 최근 순으로
+            val items = periodItems(period)
+            return mapOf("items" to items, "query_ms" to 0.0, "total_ms" to (System.nanoTime() - t0) / 1e6,
+                         "candidates" to items.size, "rest" to "", "recent" to true) + extra
+        }
+        val q = templated(if (hit == null) query else scene.joinToString(" "))
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
-        val items = rank(b, q).map { c ->
+        val keep = period?.let { inPeriod(it) }
+        val items = rank(b, q, keep).map { c ->
             if (c.seg != null) segmentItem(c.seg, b.photos[c.cover], b.raw(c.cover, q)) else photoItem(b.photos[c.cover], b.raw(c.cover, q))
         }
         return mapOf("items" to items, "query_ms" to tq, "total_ms" to (System.nanoTime() - t0) / 1e6,
-                     "candidates" to b.segs.filterNotNull().toSet().size + b.segs.count { it == null })
+                     "candidates" to b.segs.filterNotNull().toSet().size + b.segs.count { it == null }) +
+            (if (hit != null) mapOf("rest" to scene.filter { it !in FILLER }.joinToString(" ")) else emptyMap()) + extra
+    }
+
+    /** 검색어 낱말 tok이 인물 낱말 word인지: 그대로이거나 조사가 붙은 것("딸", "딸이") */
+    private fun isWord(tok: String, word: String) = tok == word || JOSA.any { tok == word + it }
+
+    /** 낱말들 중에서 drop의 낱말을 하나씩(처음 나온 것) 뺀다 */
+    private fun dropTokens(text: String, drop: List<String>): String {
+        val left = text.split(" ").filter { it.isNotEmpty() }.toMutableList()
+        for (d in drop) left.remove(d)
+        return left.joinToString(" ")
+    }
+
+    /**
+     * 읽은 시기 말의 기간과 화면 칩 정보(#16). 칩: words(검색어에서 뺄 낱말), text(읽은 말), range(기간 표시),
+     *   who(누구 나이인지), need: "owner"(누구 나이인지 골라야 함, cands 중에서) / "birth"(그 인물의 생년이 없음).
+     * 나이 말의 인물: 검색어 속 인물(바로 앞에 있는 것 먼저) → 사용자가 칩에서 고른 인물(picks["@나이"]) → 생년이 있는 인물이 하나뿐이면 그 사람.
+     * 기간을 정하지 못하면 거르지 않는다(null).
+     */
+    private fun whenOf(h: When.Hit, toks: List<String>, words: List<Word>, picks: Map<String, List<Long>>): Pair<Period?, Map<String, Any?>> {
+        val base = mapOf("words" to h.tokens.map { toks[it] }, "text" to h.text)
+        val age = h.age ?: return h.period to base + mapOf("range" to h.period!!.label())
+        class Q(val id: Long, val name: String, val birth: Int?)
+        val ps = ArrayList<Q>()
+        db.readableDatabase.rawQuery("SELECT id, name, birth_year FROM people", null).use {
+            while (it.moveToNext()) ps.add(Q(it.getLong(0), it.getString(1), if (it.isNull(2)) null else it.getInt(2)))
+        }
+        val wordOf = { i: Int -> words.firstOrNull { isWord(toks[i], it.word) } }
+        val first = h.tokens.first()
+        val owner = (first - 1 downTo 0).firstNotNullOfOrNull(wordOf) ?: toks.indices.firstNotNullOfOrNull(wordOf)
+        val picked = picks["@나이"]?.firstOrNull()?.let { id -> ps.firstOrNull { it.id == id } }
+        val born = ps.filter { it.birth != null }
+        val (who, ids) = when {
+            owner != null -> owner.word to owner.chosen.toList()
+            picked != null -> picked.name to listOf(picked.id)
+            born.size == 1 -> born[0].name to listOf(born[0].id)
+            else -> null to emptyList()
+        }
+        val info = base + mapOf("age" to age.label, "who" to who)
+        if (ids.isEmpty()) return null to info + mapOf("need" to (if (born.isEmpty()) "birth" else "owner"), "cands" to born.map { it.id })
+        val births = ids.map { id -> ps.firstOrNull { it.id == id }?.birth }
+        if (births.any { it == null }) return null to info + mapOf("need" to "birth")
+        if (births.toSet().size > 1) return null to info + mapOf("need" to "owner", "cands" to ids)
+        val p = age.period(births[0]!!)
+        return p to info + mapOf("range" to p.label())
+    }
+
+    /** 기간 안의 구간(시작~끝이 겹치는)과 구간 밖 사진(찍은 날, 없으면 받은 날 — 짐작한 날짜도 넣는다) */
+    private fun inPeriod(p: Period): Pair<Set<Long>, Set<Long>> {
+        val a = p.startMs(); val z = p.endMs()
+        val ids = { sql: String -> db.readableDatabase.rawQuery(sql, null).use { c -> HashSet<Long>().also { while (c.moveToNext()) it.add(c.getLong(0)) } } }
+        return ids("SELECT id FROM segments WHERE start <= $z AND \"end\" >= $a") to
+            ids("SELECT id FROM photos WHERE segment IS NULL AND COALESCE(taken_at, received_at) BETWEEN $a AND $z")
+    }
+
+    /** 장면 말 없이 시기만 있을 때: 기간 안의 구간·구간 밖 사진을 최근 순으로(실사 아닌 이미지는 뒤로) */
+    private fun periodItems(p: Period?): List<Map<String, Any?>> {
+        if (p == null) return emptyList()
+        val a = p.startMs(); val z = p.endMs()
+        class C(val date: Long, val fake: Boolean, val item: Map<String, Any?>)
+        val cs = ArrayList<C>()
+        db.readableDatabase.rawQuery("""SELECT s.id, s.start, s.n, COALESCE((SELECT id FROM photos WHERE segment = s.id AND is_rep = 1 LIMIT 1),
+                (SELECT id FROM photos WHERE segment = s.id ORDER BY taken_at LIMIT 1)) FROM segments s WHERE s.start <= $z AND s."end" >= $a""", null).use {
+            while (it.moveToNext()) {
+                if (it.isNull(3)) continue
+                cs.add(C(it.getLong(1), false, mapOf("kind" to "segment", "id" to it.getLong(0), "cover" to it.getLong(3), "n" to it.getInt(2),
+                    "date" to it.getLong(1), "date_source" to "카메라")))
+            }
+        }
+        db.readableDatabase.rawQuery("""SELECT id, taken_at, received_at, date_source, COALESCE(fake, 0) FROM photos
+                WHERE segment IS NULL AND COALESCE(taken_at, received_at) BETWEEN $a AND $z""", null).use {
+            val n = { i: Int -> if (it.isNull(i)) null else it.getLong(i) }
+            while (it.moveToNext()) {
+                val date = n(1); val received = n(2)
+                cs.add(C(date ?: received!!, it.getInt(4) != 0, mapOf("kind" to "photo", "id" to it.getLong(0), "cover" to it.getLong(0), "n" to 1,
+                    "date" to date, "received" to received, "date_source" to it.getString(3))))
+            }
+        }
+        return cs.sortedWith(compareBy<C> { it.fake }.thenByDescending { it.date }).take(PERIOD_TOP).map { it.item }
     }
 
     /** 장면 검색의 한 칸: 구간(seg) 또는 구간 밖 사진 한 장. cover·score는 bank 안의 순번과 순위용 점수 */
@@ -92,13 +189,15 @@ class Search(private val ctx: Context) {
      *   구간을 위 두 장 평균으로 겨루는 것도 시험했는데, 상위 칸 대부분이 구간 밖 낱장이라 구간만 깎여 날짜 없는 AI 그림이 오히려 올라왔다.
      *   또렷함·색 다양함이 낮은 사진 뒤로 보내기도 시험했는데, 걸리는 것이 검색어마다 0~1장이고 눈 발자국 같은 진짜 사진도 걸려 넣지 않았다.
      */
-    private fun rank(b: Bank, q: FloatArray): List<Cand> {
+    private fun rank(b: Bank, q: FloatArray, keep: Pair<Set<Long>, Set<Long>>? = null): List<Cand> {
         val (_, scores) = score(b, q)
         val back = { i: Int -> b.fake[i] || (b.person[i] ?: Float.NEGATIVE_INFINITY) > SOFT_PERSON }
         val cands = ArrayList<Cand>()
         val bySeg = HashMap<Long, MutableList<Int>>()
         for (i in scores.indices) {
             val seg = b.segs[i]
+            // 시기 말(#16): 기간 안의 구간·사진만(keep = 구간 id, 구간 밖 사진 id)
+            if (keep != null && (if (seg != null) seg !in keep.first else b.photos[i] !in keep.second)) continue
             if (seg == null) cands.add(Cand(null, i, scores[i], back(i))) else bySeg.getOrPut(seg) { ArrayList() }.add(i)
         }
         for ((seg, all) in bySeg) {
@@ -245,14 +344,19 @@ class Search(private val ctx: Context) {
      * 장면 벡터는 구간 대표와 구간 밖 사진에만 있어서, 구간은 구간의 점수로 겨룬다(일반 검색과 같다).
      * 결과 칸에 ids(그 칸의 인물 사진)를 넣어, 누르면 구간 전체가 아니라 인물 사진만 보인다.
      */
-    private fun searchPeople(groups: List<Set<Long>>, words: List<String>, rest: String, t0: Long): Map<String, Any?> {
+    private fun searchPeople(groups: List<Set<Long>>, words: List<String>, rest: String, t0: Long, period: Period? = null): Map<String, Any?> {
         val ids = groups.map { photosOf(it) }.reduce { a, b -> a intersect b }
         class Row(val id: Long, val seg: Long?, val date: Long?, val received: Long?, val source: String)
         val rows = ArrayList<Row>()
+        val range = period?.let { it.startMs()..it.endMs() }
         if (ids.isNotEmpty()) db.readableDatabase.rawQuery("""SELECT id, segment, taken_at, received_at, date_source FROM photos
                 WHERE id IN (${ids.joinToString(",")}) ORDER BY taken_at DESC, received_at DESC""", null).use {
             val n = { i: Int -> if (it.isNull(i)) null else it.getLong(i) }
-            while (it.moveToNext()) rows.add(Row(it.getLong(0), n(1), n(2), n(3), it.getString(4)))
+            while (it.moveToNext()) {
+                val r = Row(it.getLong(0), n(1), n(2), n(3), it.getString(4))
+                // 시기 말(#16): 찍은 날(없으면 받은 날)이 기간 안인 사진만. 짐작한 날짜도 넣는다
+                if (range == null || (r.date ?: r.received)?.let { d -> d in range } == true) rows.add(r)
+            }
         }
         var tq = 0.0
         val segScore = HashMap<Long, Float>(); val photoScore = HashMap<Long, Float>() // 순위용

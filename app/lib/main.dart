@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -82,6 +83,24 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Status.i.start();
+    if (kDebugMode) {
+      // 개발용 확인 통로 — 출시 전 정리 대상: 앱이 떠 있을 때 adb 검색어가 오면 Kotlin이 알린다
+      channel.setMethodCallHandler((call) async {
+        if (call.method == 'debugQueryReady') takeDebugQuery();
+      });
+      takeDebugQuery();
+    }
+  }
+
+  /// 개발용 확인 통로 — 출시 전 정리 대상: adb로 넣은 검색어(MainActivity의 pt_query)가 있으면 검색 탭으로 가서 검색한다
+  Future<void> takeDebugQuery() async {
+    if (!kDebugMode) return;
+    try {
+      final q = await channel.invokeMethod<String>('debugQuery');
+      if (q == null || q.trim().isEmpty || !mounted) return;
+      setState(() => tab = 1);
+      SearchPage.debugQuery.value = q;
+    } catch (_) {}
   }
 
   @override
@@ -93,7 +112,10 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   // 설정 화면에서 돌아오면 권한 상태를 다시 읽고, 새 사진이 있나 갤러리를 다시 본다
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) Status.i.refresh(scan: true);
+    if (state == AppLifecycleState.resumed) {
+      Status.i.refresh(scan: true);
+      if (kDebugMode) takeDebugQuery(); // 개발용 확인 통로 — 출시 전 정리 대상
+    }
   }
 
   @override

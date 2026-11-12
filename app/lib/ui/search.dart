@@ -5,6 +5,9 @@ part of '../main.dart';
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
+  /// 개발용 확인 통로 — 출시 전 정리 대상: Shell이 adb 검색어를 여기 넣으면 사람이 입력한 것처럼 run()으로 검색한다(디버그만)
+  static final debugQuery = ValueNotifier<String?>(null);
+
   @override
   State<SearchPage> createState() => _SearchPageState();
 }
@@ -25,6 +28,9 @@ class _SearchPageState extends State<SearchPage> {
   Map<int, Map<String, dynamic>> people = {}; // 등록한 인물: id → 이름·관계·대표 얼굴
   List<String> recent = [];
   String query = ''; // 마지막으로 검색한 말. 인물 더하기·빼기(#14·#15)는 이 글자를 고쳐 다시 검색한다(따로 상태 없음)
+  // 시기 칩(#16): Kotlin이 읽은 시기 말. words(검색어에서 뺄 낱말), text, range, who, need(owner|birth), cands
+  Map<String, dynamic>? period;
+  static const agePick = '@나이'; // picks에서 '누구 나이인지' 고른 인물의 열쇠(인물 낱말과 겹치지 않는 말)
   // Kotlin Search와 같은 조사·군말: "딸이랑"의 낱말은 "딸", "사진"만 남으면 검색할 말이 없는 것
   static const josa = ['이하고', '이랑', '이와', '이가', '이는', '이를', '이의', '이도', '이만', '에게', '한테', '하고',
       '랑', '와', '과', '의', '은', '는', '이', '가', '을', '를', '도', '만'];
@@ -39,6 +45,28 @@ class _SearchPageState extends State<SearchPage> {
     pref('recent').then((r) {
       if (mounted && r != null && r.isNotEmpty) setState(() => recent = r.split('\n'));
     }).catchError((_) {});
+    if (kDebugMode) {
+      SearchPage.debugQuery.addListener(onDebugQuery);
+      onDebugQuery();
+    }
+  }
+
+  @override
+  void dispose() {
+    SearchPage.debugQuery.removeListener(onDebugQuery);
+    super.dispose();
+  }
+
+  /// 개발용 확인 통로 — 출시 전 정리 대상: 새 검색으로(고른 인물·나이 주인은 비운다). 검색 중이면 끝난 뒤 한다
+  void onDebugQuery() {
+    final q = SearchPage.debugQuery.value;
+    if (!kDebugMode || q == null || !mounted) return;
+    if (busy) {
+      Future.delayed(const Duration(milliseconds: 300), onDebugQuery);
+      return;
+    }
+    SearchPage.debugQuery.value = null;
+    run(q);
   }
 
   Future<void> remember(String q) async {
@@ -64,16 +92,20 @@ class _SearchPageState extends State<SearchPage> {
       final r = Map<String, dynamic>.from(await channel.invokeMethod('search', {'q': q, 'picks': picks}));
       final list = (r['items'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
       final ws = ((r['words'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
-      if (ws.isNotEmpty && people.isEmpty) people = {for (final e in await loadPeople()) e['id'] as int: e};
+      final when = r['when'] == null ? null : Map<String, dynamic>.from(r['when'] as Map);
+      if ((ws.isNotEmpty || when != null) && people.isEmpty) people = {for (final e in await loadPeople()) e['id'] as int: e};
       setState(() {
         words = ws;
+        period = when;
         hint = r['hint'] == true;
         rest = r['rest'] as String? ?? '';
         items = list;
         final photos = list.fold<int>(0, (a, e) => a + ((e['n'] as num?)?.toInt() ?? 1));
         info = r['who'] != null
             ? '${r['who']} 사진 ${fmtInt(r['photos'])}장 · ${rest.isEmpty ? '최근 순' : '"$rest" 잘 맞는 순'}'
-            : '잘 맞는 순간 ${list.length}개 · 사진 ${fmtInt(photos)}장';
+            : r['recent'] == true
+                ? '순간 ${list.length}개 · 사진 ${fmtInt(photos)}장 · 최근 순'
+                : '잘 맞는 순간 ${list.length}개 · 사진 ${fmtInt(photos)}장';
       });
     } catch (e) {
       setState(() { error = '검색하지 못했어요. 잠시 뒤 다시 해 주세요.'; items = []; });
@@ -85,7 +117,7 @@ class _SearchPageState extends State<SearchPage> {
   void clear() {
     ctrl.clear();
     query = '';
-    setState(() { items = null; words = []; picks.clear(); });
+    setState(() { items = null; words = []; period = null; picks.clear(); });
   }
 
   List<String> tokens(String q) => q.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
@@ -134,6 +166,99 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   List<int> ints(dynamic l) => (l as List).map((e) => (e as num).toInt()).toList();
+
+  /// 시기 빼기(#16): 검색어에서 시기 말 낱말들을(처음 나온 것 하나씩) 지우고 다시 검색. 남은 말이 없으면 처음 화면
+  void dropPeriod() {
+    if (busy || period == null) return;
+    final left = tokens(query);
+    for (final w in (period!['words'] as List).cast<String>()) {
+      left.remove(w);
+    }
+    picks.remove(agePick);
+    if (left.every(filler.contains)) {
+      clear();
+    } else {
+      run(left.join(' '), keepPicks: true);
+    }
+  }
+
+  /// 시기 칩의 글: "작년: 2025년", "2025년", "딸 1살 때: 2019년", "1살 때: 누구 나이인가요?", "딸 1살 때: 생년을 넣어 주세요"
+  String periodLabel(Map<String, dynamic> p) {
+    final text = p['text'] as String;
+    final who = p['who'] as String?;
+    final head = who == null ? text : '$who $text';
+    return switch (p['need']) {
+      'owner' => '$text: 누구 나이인가요?',
+      'birth' => '$head: 생년을 넣어 주세요',
+      _ => p['range'] == text ? text : '$head: ${p['range']}',
+    };
+  }
+
+  /// 시기 칩: 달력 아이콘 + 읽은 시기와 기간 + ✕. '누구 나이인가요?'면 눌러서 인물을 고른다
+  Widget periodChip(BuildContext context, Map<String, dynamic> p) {
+    final cs = Theme.of(context).colorScheme;
+    final ask = p['need'] == 'owner';
+    final warn = p['need'] != null;
+    return Material(
+      key: const ValueKey('period-chip'),
+      color: Theme.of(context).cardTheme.color,
+      shape: StadiumBorder(side: BorderSide(color: warn ? cs.error : cs.primary, width: 1.5)),
+      clipBehavior: Clip.antiAlias,
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Flexible(
+          child: InkWell(
+            onTap: ask ? () => chooseOwner(context, p) : null,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 9, 2, 9),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.event, size: 18, color: warn ? cs.error : cs.primary),
+                const SizedBox(width: 6),
+                Flexible(child: Text(periodLabel(p), maxLines: 2, overflow: TextOverflow.ellipsis)),
+                if (ask) Icon(Icons.expand_more, size: 18, color: cs.onSurfaceVariant),
+              ]),
+            ),
+          ),
+        ),
+        IconButton(
+          tooltip: '${p['text']} 빼기',
+          onPressed: dropPeriod,
+          icon: const Icon(Icons.close),
+          iconSize: 16,
+          color: cs.onSurfaceVariant,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+        ),
+      ]),
+    );
+  }
+
+  /// 나이 말의 인물 고르기: 생년을 넣은 인물 중에서. 고르면 picks에 넣어 다시 검색(검색어는 그대로)
+  Future<void> chooseOwner(BuildContext context, Map<String, dynamic> p) async {
+    final ids = ints(p['cands'] ?? []);
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+          child: ListView(shrinkWrap: true, children: [
+            ListTile(title: Text('"${p['text']}"은(는) 누구 나이인가요?', style: Theme.of(context).textTheme.titleMedium)),
+            for (final id in ids)
+              ListTile(
+                leading: FaceAvatar(face: people[id]?['face'] as int?, size: 40),
+                title: Text(people[id] != null ? personLabel(people[id]!) : '?'),
+                subtitle: people[id]?['birth_year'] != null ? Text('${people[id]!['birth_year']}년생') : null,
+                onTap: () => Navigator.pop(context, id),
+              ),
+          ]),
+        ),
+      ),
+    );
+    if (picked == null) return;
+    picks[agePick] = [picked];
+    run(query, keepPicks: true);
+  }
 
   /// 인물 몇 명의 이름: "딸" / "딸 외 1명"
   String whoLabel(List<int> ids) {
@@ -343,17 +468,22 @@ class _SearchPageState extends State<SearchPage> {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            if (words.isNotEmpty) ...[
-              Text(hint ? '이렇게 이해했어요 · 눌러서 바꿀 수 있어요' : '이렇게 이해했어요', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+            if (words.isNotEmpty || period != null) ...[
+              Text(hint && words.isNotEmpty ? '이렇게 이해했어요 · 눌러서 바꿀 수 있어요' : '이렇게 이해했어요', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
               const SizedBox(height: 8),
               Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
                 for (final w in words) personChip(context, w),
+                if (period != null) periodChip(context, period!),
                 if (rest.isNotEmpty)
                   Chip(label: Text('장면: $rest'), backgroundColor: cs.surfaceContainerHighest, side: BorderSide.none),
               ]),
               const SizedBox(height: 12),
             ],
-            Text(error ?? (list.isEmpty ? '맞는 사진을 찾지 못했어요. 다른 말로 찾아보세요.' : info),
+            Text(error ?? (list.isEmpty
+                    ? (period?['need'] == 'owner')
+                        ? '누구 나이인지 위 칩을 눌러 골라 주세요.'
+                        : '맞는 사진을 찾지 못했어요. 다른 말로 찾아보세요.'
+                    : info),
                 style: TextStyle(fontSize: 13, color: error != null ? cs.error : cs.onSurfaceVariant)),
           ]),
         ),

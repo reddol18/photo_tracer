@@ -29,6 +29,34 @@ class MainActivity : FlutterActivity() {
     private val clusterer = Executors.newSingleThreadExecutor() // 다시 묶는 동안에도 다른 화면 요청이 기다리지 않게
     private val main = Handler(Looper.getMainLooper())
     private var permissionResult: MethodChannel.Result? = null
+    private var channel: MethodChannel? = null
+
+    // 개발용 확인 통로 — 출시 전 정리 대상.
+    // adb는 한글을 input text로 못 넣어서, 디버그 빌드에서만 am start 인자로 검색어를 받아 검색 화면을 연다.
+    //   adb shell am start -n com.reddol18.photo_tracer/.MainActivity --es pt_query "작년 여름 바다"
+    //   adb shell am start -n com.reddol18.photo_tracer/.MainActivity --es pt_query_b64 <UTF-8 base64>   (b64 우선)
+    // Dart가 시작·재개 때 "debugQuery"로 한 번 가져가고(가져가면 비움), 앱이 떠 있을 때는 onNewIntent에서 "debugQueryReady"로 알린다.
+    private var debugQuery: String? = null
+    private fun debuggable() = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    private fun readDebugQuery(intent: Intent?) {
+        if (intent == null || !debuggable()) return
+        val q = try {
+            intent.getStringExtra("pt_query_b64")?.let { String(android.util.Base64.decode(it, android.util.Base64.DEFAULT), Charsets.UTF_8) }
+        } catch (e: IllegalArgumentException) {
+            Log.w("PhotoTracer", "pt_query_b64 해독 실패: $e"); null
+        } ?: intent.getStringExtra("pt_query")
+        // 같은 intent를 다시 읽지 않게 지운다(화면 회전·재생성 때)
+        intent.removeExtra("pt_query_b64"); intent.removeExtra("pt_query")
+        if (!q.isNullOrBlank()) { debugQuery = q.trim(); Log.i("PhotoTracer", "개발용 검색어 받음: $debugQuery") }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readDebugQuery(intent)
+        if (debugQuery != null) channel?.invokeMethod("debugQueryReady", null)
+    }
 
     private val permissions = buildList {
         add(if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -48,7 +76,9 @@ class MainActivity : FlutterActivity() {
             Who(this).assignAll()
             prefs.edit().putInt("who_rule", Who.RULE).apply()
         }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app").setMethodCallHandler { call, result ->
+        readDebugQuery(intent) // 개발용 확인 통로 — 출시 전 정리 대상 (차가운 시작)
+        channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app")
+        channel!!.setMethodCallHandler { call, result ->
             fun bg(pool: java.util.concurrent.ExecutorService = worker, block: () -> Any?) = pool.execute {
                 try {
                     val v = block().takeUnless { it is Unit } // 돌려줄 값이 없는 일(Unit)은 채널이 못 실어 나른다
@@ -173,6 +203,8 @@ class MainActivity : FlutterActivity() {
                     out
                 }
                 "exportQueryVectors" -> bg { Search(this).exportQueryVectors() }
+                // 개발용 확인 통로 — 출시 전 정리 대상: adb로 받은 검색어를 한 번 넘기고 비운다(릴리스는 늘 null)
+                "debugQuery" -> { val q = debugQuery; debugQuery = null; result.success(q) }
                 // 화면 설정(대표 색·화면 모드·처음 안내 봄·최근 검색어): 문자열 하나씩
                 "pref" -> bg { getSharedPreferences("ui", MODE_PRIVATE).getString(call.argument<String>("key"), null) }
                 "setPref" -> bg {

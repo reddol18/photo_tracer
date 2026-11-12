@@ -24,6 +24,7 @@ final people = [
 Map<String, dynamic> scenario = {};
 final thumbSizes = <int, List<int>>{}; // 사진 id → 'thumb'로 요청받은 크기들
 final searches = <String>[]; // 'search'로 받은 검색어들
+Map<String, dynamic> lastPicks = {}; // 마지막 'search'의 picks
 
 Future<Object?> fake(MethodCall call) async {
   switch (call.method) {
@@ -78,11 +79,23 @@ Future<Object?> fake(MethodCall call) async {
     case 'search':
       final q = call.arguments['q'] as String;
       searches.add(q);
+      lastPicks = Map<String, dynamic>.from(call.arguments['picks'] as Map? ?? {});
       if (scenario['dynamicSearch'] == true) {
-        // 검색어 낱말 중 등록 이름(조사 '과'·'와'·'의'를 떼고)은 인물 낱말, 나머지는 장면
+        // 검색어 낱말 중 등록 이름(조사 '과'·'와'·'의'를 떼고)은 인물 낱말, 나머지는 장면.
+        // 시기 말(#16): '작년' → 2025년, '1살 때' → 누구 나이인지 묻기(골랐으면 딸 생년으로)
         final ws = <Map<String, dynamic>>[];
         final rest = <String>[];
-        for (final tok in q.split(' ')) {
+        Map<String, dynamic>? when;
+        final toks = q.split(' ');
+        if (toks.contains('작년')) {
+          when = {'words': ['작년'], 'text': '작년', 'range': '2025년'};
+        } else if (toks.contains('1살')) {
+          final picked = lastPicks['@나이'] as List?;
+          when = picked == null
+              ? {'words': ['1살', '때'], 'text': '1살 때', 'age': '1살', 'who': null, 'need': 'owner', 'cands': [1, 3]}
+              : {'words': ['1살', '때'], 'text': '1살 때', 'age': '1살', 'who': '딸', 'range': '2019년'};
+        }
+        for (final tok in toks.where((t) => !((when?['words'] as List?)?.contains(t) ?? false))) {
           final f = tok.replaceAll(RegExp(r'(과|와|의)$'), '');
           final p = people.where((p) => (p['name'] as String).replaceAll(' ', '') == f).firstOrNull;
           if (p == null) {
@@ -92,7 +105,8 @@ Future<Object?> fake(MethodCall call) async {
           }
         }
         return {'items': [{'kind': 'photo', 'cover': 102, 'date': day}], 'rest': rest.join(' '),
-                'who': ws.isEmpty ? null : ws.map((w) => w['word']).join(' · '), 'photos': 1, 'words': ws, 'hint': false};
+                'who': ws.isEmpty ? null : ws.map((w) => w['word']).join(' · '), 'photos': 1, 'words': ws, 'hint': false,
+                'when': when};
       }
       return {'items': [
         {'kind': 'segment', 'id': 1, 'cover': 101, 'n': 18, 'date': day, 'date_source': 'exif'},
@@ -292,6 +306,52 @@ void main() {
     expect(searches.last, '바다');
     expect(find.text('장면: 바다'), findsNothing); // 인물 칩이 없으면 '이렇게 이해했어요' 줄도 없다
     expect(find.text('인물로 찾기'), findsNothing); // 결과 화면 그대로
+    await cleanup(t);
+  });
+
+  Future<void> type(WidgetTester t, String q) async {
+    await t.enterText(find.byType(TextField), q);
+    await t.testTextInput.receiveAction(TextInputAction.search);
+    await settle(t);
+  }
+
+  testWidgets('검색: 시기 칩(#16)이 보이고 ✕로 시기 말만 빼고 다시 검색', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await type(t, '딸 작년 바다');
+    expect(searches.last, '딸 작년 바다');
+    expect(find.text('작년: 2025년'), findsOneWidget);
+    expect(find.text('장면: 바다'), findsOneWidget);
+    await t.tap(find.byTooltip('작년 빼기'));
+    await settle(t);
+    expect(searches.last, '딸 바다');
+    expect(find.byKey(const ValueKey('period-chip')), findsNothing);
+    expect(find.byTooltip('딸 빼기'), findsOneWidget); // 인물 칩은 그대로
+    // 시기만 있는 검색: 인물 칩이 없어도 '이렇게 이해했어요'에 시기 칩
+    await type(t, '작년');
+    expect(find.text('이렇게 이해했어요'), findsOneWidget);
+    expect(find.text('작년: 2025년'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('검색: 나이 말에 인물이 없으면 칩에서 누구 나이인지 고른다(#16)', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await type(t, '1살 때');
+    expect(find.text('1살 때: 누구 나이인가요?'), findsOneWidget);
+    await t.tap(find.text('1살 때: 누구 나이인가요?'));
+    await t.pumpAndSettle();
+    expect(find.text('2018년생'), findsOneWidget); // 생년 있는 인물(엄마·딸) 중에서
+    await t.tap(find.text('2018년생'));
+    await settle(t);
+    expect(searches.last, '1살 때'); // 검색어는 그대로, 고른 인물은 picks로
+    expect(lastPicks['@나이'], [3]);
+    expect(find.text('딸 1살 때: 2019년'), findsOneWidget);
+    final n = searches.length;
+    await t.tap(find.byTooltip('1살 때 빼기')); // 시기 말뿐이라 빼면 처음 화면
+    await settle(t);
+    expect(searches.length, n);
+    expect(find.text('인물로 찾기'), findsOneWidget);
     await cleanup(t);
   });
 
