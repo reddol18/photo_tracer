@@ -59,8 +59,14 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
-        <!-- 제조사 백그라운드 설정 화면(샤오미 자동 시작, 삼성 절전 예외 앱)을 바로 열기 위해 -->
+        <!-- 제조사 백그라운드 설정 화면을 바로 열기 위해 (lib/vendors.dart 표의 패키지와 맞춘다) -->
         <package android:name="com.miui.securitycenter"/>
         <package android:name="com.samsung.android.lool"/>
+        <package android:name="com.coloros.safecenter"/>
+        <package android:name="com.oppo.safe"/>
+        <package android:name="com.oneplus.security"/>
+        <package android:name="com.iqoo.secure"/>
+        <package android:name="com.vivo.permissionmanager"/>
+        <package android:name="com.huawei.systemmanager"/>
     </queries>
 </manifest>

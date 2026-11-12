@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'vendors.dart';
+
 part 'ui/common.dart';
 part 'ui/onboarding.dart';
 part 'ui/home.dart';

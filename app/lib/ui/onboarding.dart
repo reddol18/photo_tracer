@@ -171,40 +171,14 @@ class _Permissions extends StatelessWidget {
 class PermissionsList extends StatelessWidget {
   const PermissionsList({super.key});
 
-  /// 제조사가 배터리 최적화 예외와 따로 앱을 재우거나 막는 설정. 기본 안드로이드(픽셀 등)는 예외면 충분해 안내하지 않는다
-  static ({String title, String body, String button})? vendorGuide(String manufacturer) {
-    final m = manufacturer.toLowerCase();
-    if (RegExp('xiaomi|redmi|poco').hasMatch(m)) {
-      return (
-        title: '샤오미 폰: 자동 시작 켜기',
-        body: '목록에서 추억먹는하마의 "자동 시작"을 켜 주세요. 꺼져 있으면 폰을 다시 켠 뒤 밤 정리가 깨어나지 못해요.',
-        button: '자동 시작 설정 열기',
-      );
-    }
-    if (m == 'samsung') {
-      return (
-        title: '삼성 폰: 절전 예외 앱에 넣기',
-        body: '배터리 › 백그라운드 사용 제한 › "절전 예외 앱"에 추억먹는하마를 넣어 주세요. 며칠 앱을 안 열면 잠자기 앱이 되어 정리가 멈출 수 있어요.',
-        button: '설정 열기',
-      );
-    }
-    if (RegExp('oppo|realme|oneplus|vivo|iqoo|huawei|honor|meizu|asus').hasMatch(m)) {
-      return (
-        title: '이 폰: 백그라운드 실행 허용',
-        body: '앱 정보에서 배터리를 "제한 없음"으로 바꾸고, "자동 시작"이나 "백그라운드 실행 허용"이 있으면 켜 주세요.',
-        button: '앱 정보 열기',
-      );
-    }
-    return null;
-  }
-
   @override
   Widget build(BuildContext context) => ListenableBuilder(
         listenable: Status.i,
         builder: (context, _) {
           final st = Status.i;
           final cs = Theme.of(context).colorScheme;
-          final vendor = vendorGuide('${st.s?['manufacturer'] ?? ''}');
+          // 제조사가 배터리 최적화 예외와 따로 앱을 재우는 설정 (lib/vendors.dart 표). 목록에 없는 폰은 앱 정보 안내
+          final vendor = vendorOf('${st.s?['manufacturer'] ?? ''}', '${st.s?['brand'] ?? ''}');
           Widget item(String no, String title, String why, bool done, String cta, VoidCallback onTap) => Card(
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18), side: BorderSide(color: done ? cs.outlineVariant : cs.primary, width: done ? 1 : 1.5)),
@@ -244,22 +218,25 @@ class PermissionsList extends StatelessWidget {
             const SizedBox(height: 12),
             item('2', '배터리 제한 풀기', '정리는 충전 중일 때만 해요. 이 제한을 풀지 않으면 폰이 밤사이 정리를 멈춰 버려요. 낮에 배터리를 더 쓰지는 않아요.',
                 st.batteryOk, '배터리 설정 열기', () => channel.invokeMethod('openBatterySettings')),
-            if (vendor != null) ...[
-              const SizedBox(height: 12),
-              Card(
-                color: cs.surfaceContainerHighest,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(vendor.title, style: const TextStyle(fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 4),
-                    Text(vendor.body, style: const TextStyle(fontSize: 13, height: 1.6)),
-                    TextButton(onPressed: () => channel.invokeMethod('openVendorSettings'), child: Text(vendor.button)),
-                  ]),
-                ),
+            const SizedBox(height: 12),
+            Card(
+              color: cs.surfaceContainerHighest,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(vendor.title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text(vendor.body, style: const TextStyle(fontSize: 13, height: 1.6)),
+                  TextButton(
+                    onPressed: () => channel.invokeMethod('openVendorSettings', {
+                      'screens': [for (final (pkg, cls) in vendor.screens) [pkg, cls]],
+                    }),
+                    child: Text(vendor.button),
+                  ),
+                ]),
               ),
-            ],
+            ),
           ]);
         },
       );

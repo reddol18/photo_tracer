@@ -147,6 +147,33 @@ void main() {
     await cleanup(t);
   });
 
+  testWidgets('권한과 배터리: 제조사 안내 카드와 설정 열기 (#18)', (t) async {
+    final opened = <Object?>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'openVendorSettings') opened.add(call.arguments);
+      return fake(call);
+    });
+    // 샤오미(Redmi): 자동 시작 화면을 넘긴다
+    scenario['status'] = {...status(), 'manufacturer': 'Xiaomi', 'brand': 'Redmi'};
+    await t.runAsync(() => Status.i.refresh());
+    await show(t, const PermissionsPage());
+    expect(find.text('샤오미 폰: 자동 시작 켜기'), findsOneWidget);
+    await t.tap(find.text('자동 시작 설정 열기'));
+    await t.pump();
+    expect(opened.last, {
+      'screens': [['com.miui.securitycenter', 'com.miui.permcenter.autostart.AutoStartManagementActivity']],
+    });
+    // 목록에 없는 폰(픽셀): 기본 안내, 넘기는 화면 없음 → 앱 정보
+    scenario['status'] = {...status(), 'manufacturer': 'Google', 'brand': 'google'};
+    await t.runAsync(() => Status.i.refresh());
+    await t.pump();
+    expect(find.text('이 폰: 앱 정보에서 배터리 제한 풀기'), findsOneWidget);
+    await t.tap(find.text('앱 정보 열기'));
+    await t.pump();
+    expect(opened.last, {'screens': []});
+    await cleanup(t);
+  });
+
   testWidgets('홈: 정리 중 배너와 순간들', (t) async {
     await show(t, const Shell());
     expect(find.text('추억'), findsOneWidget);

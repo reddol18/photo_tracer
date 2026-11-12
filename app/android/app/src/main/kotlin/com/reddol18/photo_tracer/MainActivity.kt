@@ -76,7 +76,12 @@ class MainActivity : FlutterActivity() {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                     result.success(null)
                 }
-                "openVendorSettings" -> { openVendorSettings(); result.success(null) }
+                "openVendorSettings" -> {
+                    val screens = call.argument<List<List<String>>>("screens").orEmpty().mapNotNull { s ->
+                        if (s.size == 2) s[0] to s[1] else null
+                    }
+                    openVendorSettings(screens); result.success(null)
+                }
                 "scan" -> {
                     if (photosGranted()) { if (IndexWorker.nightOn(this)) IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     worker.execute { try { Search(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "search_eval 실패: $e") } }
@@ -211,7 +216,9 @@ class MainActivity : FlutterActivity() {
             "photos_permission" to photosGranted(),
             "notifications" to (Build.VERSION.SDK_INT < 33 || granted(Manifest.permission.POST_NOTIFICATIONS)),
             "battery_exempt" to pm.isIgnoringBatteryOptimizations(packageName),
+            // 제조사 안내는 화면(lib/vendors.dart)이 둘 다 보고 고른다 (예: 예전 Honor는 HUAWEI/HONOR)
             "manufacturer" to Build.MANUFACTURER,
+            "brand" to Build.BRAND,
             "running" to Indexer.isRunning(),
             "rest_why" to Indexer.restWhy,
             "rest_left" to ((Indexer.restUntil - System.currentTimeMillis()) / 1000).coerceAtLeast(0),
@@ -234,26 +241,28 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * 제조사가 따로 두는 백그라운드 설정 화면. 화면 이름은 OS 버전마다 달라 앞에서부터 열어 보고, 다 안 되면 앱 정보로.
-     *   샤오미 HyperOS: 앱 정보에 자동 시작이 없고 보안 앱의 자동 시작 목록에 있다 (Redmi OS1.0에서 확인)
-     *   삼성 One UI: 배터리 → 백그라운드 사용 제한 → 절전 예외 앱 목록 (실기기 미확인 — 갤럭시에서 시험 필요)
+     * 제조사가 따로 두는 백그라운드 설정 화면. 어느 화면을 열지는 화면 쪽 표(lib/vendors.dart)가 골라 넘긴다.
+     * 화면 이름은 OS 버전마다 달라 앞에서부터 열어 보고, 다 안 되면 앱 정보로. 못 연 것은 로그로 남긴다.
+     * resolveActivity는 Android 11+ 패키지 가시성 때문에 AndroidManifest <queries>에 그 패키지가 있어야 보인다.
+     * 안 보여도 startActivity는 될 수 있어 try로 한 번 더 열어 본다.
      */
-    private fun openVendorSettings() {
-        val screens = when {
-            Regex("xiaomi|redmi|poco", RegexOption.IGNORE_CASE).containsMatchIn(Build.MANUFACTURER) -> listOf(
-                "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity")
-            Build.MANUFACTURER.equals("samsung", ignoreCase = true) -> listOf(
-                "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.usage.CheckableAppListActivity",
-                "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.BatteryActivity",
-                "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity")
-            else -> emptyList()
-        }
+    private fun openVendorSettings(screens: List<Pair<String, String>>) {
         for ((pkg, cls) in screens) {
-            try { startActivity(Intent().setClassName(pkg, cls)); return } catch (e: Exception) {
-                Log.w("PhotoTracer", "설정 화면 못 엶: $cls", e)
+            val intent = Intent().setClassName(pkg, cls)
+            if (intent.resolveActivity(packageManager) == null) Log.i("PhotoTracer", "설정 화면 안 보임(없거나 가시성): $pkg/$cls")
+            try {
+                startActivity(intent)
+                Log.i("PhotoTracer", "설정 화면 엶: $pkg/$cls")
+                return
+            } catch (e: Exception) {
+                Log.w("PhotoTracer", "설정 화면 못 엶: $pkg/$cls ($e)")
             }
         }
-        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+            Log.w("PhotoTracer", "앱 정보도 못 엶", e)
+        }
     }
 
     private fun ids(db: Db, sql: String, arg: String): List<Long> =
