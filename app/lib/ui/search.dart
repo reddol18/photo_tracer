@@ -24,6 +24,11 @@ class _SearchPageState extends State<SearchPage> {
   bool hint = false; // 칩을 한 번도 안 눌렀으면 "눌러서 바꿀 수 있어요"
   Map<int, Map<String, dynamic>> people = {}; // 등록한 인물: id → 이름·관계·대표 얼굴
   List<String> recent = [];
+  String query = ''; // 마지막으로 검색한 말. 인물 더하기·빼기(#14·#15)는 이 글자를 고쳐 다시 검색한다(따로 상태 없음)
+  // Kotlin Search와 같은 조사·군말: "딸이랑"의 낱말은 "딸", "사진"만 남으면 검색할 말이 없는 것
+  static const josa = ['이하고', '이랑', '이와', '이가', '이는', '이를', '이의', '이도', '이만', '에게', '한테', '하고',
+      '랑', '와', '과', '의', '은', '는', '이', '가', '을', '를', '도', '만'];
+  static const filler = {'사진', '사진들', '같이', '함께', '나온', '있는', '찍은'};
 
   @override
   void initState() {
@@ -50,6 +55,7 @@ class _SearchPageState extends State<SearchPage> {
     q = q.trim();
     if (q.isEmpty) return;
     ctrl.text = q;
+    query = q;
     focus.unfocus();
     if (!keepPicks) picks.clear();
     setState(() { busy = true; error = null; });
@@ -78,7 +84,53 @@ class _SearchPageState extends State<SearchPage> {
 
   void clear() {
     ctrl.clear();
+    query = '';
     setState(() { items = null; words = []; picks.clear(); });
+  }
+
+  List<String> tokens(String q) => q.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+
+  /// 검색어 낱말 tok이 인물 낱말 word인지: 그대로이거나 조사가 붙은 것("딸", "딸이랑")
+  bool isWord(String tok, String word) => tok == word || josa.any((j) => tok == '$word$j');
+
+  /// 인물 빼기(#15): 검색어에서 그 낱말들을 지우고 다시 검색. 남은 말이 없으면 처음 화면
+  void dropWords(Iterable<String> ws) {
+    if (busy) return;
+    final drop = ws.toSet();
+    final left = tokens(query).where((t) => !drop.any((w) => isWord(t, w))).toList();
+    for (final w in drop) {
+      picks.remove(w);
+    }
+    if (left.every(filler.contains)) {
+      clear();
+    } else {
+      run(left.join(' '), keepPicks: true);
+    }
+  }
+
+  /// 인물 더하기(#14): 검색어 맨 앞 인물 낱말들 뒤에 이름을 넣어 다시 검색("딸 바다" + 아들 → "딸 아들 바다").
+  /// 이름의 빈칸은 뺀다(Kotlin도 빈칸 없이 맞춘다). 이름이 이미 검색어에 있는데 다른 사람으로 풀렸으면 그 사람으로 고른다
+  void addPerson(int id) {
+    if (busy) return;
+    final name = (people[id]!['name'] as String).replaceAll(' ', '');
+    final toks = tokens(query);
+    if (toks.any((t) => isWord(t, name))) {
+      picks[name] = [id];
+      run(query, keepPicks: true);
+      return;
+    }
+    var i = 0;
+    while (i < toks.length && words.any((w) => isWord(toks[i], w['word'] as String))) {
+      i++;
+    }
+    toks.insert(i, name);
+    run(toks.join(' '), keepPicks: true);
+  }
+
+  /// 결과 화면 얼굴 줄: 결과에 든 사람이면 빼고, 아니면 더한다
+  void toggle(int id) {
+    final hits = [for (final w in words) if (ints(w['chosen']).contains(id)) w['word'] as String];
+    hits.isEmpty ? addPerson(id) : dropWords(hits);
   }
 
   List<int> ints(dynamic l) => (l as List).map((e) => (e as num).toInt()).toList();
@@ -89,27 +141,96 @@ class _SearchPageState extends State<SearchPage> {
     return names.length <= 1 ? (names.isEmpty ? '?' : names.first) : '${names.first} 외 ${names.length - 1}명';
   }
 
-  /// 인물 칩: 작은 얼굴 + 이름 + ▾. 테두리가 있는 칩 모양이라 누를 수 있는 것이 보이게(#5)
+  /// 인물 칩: 작은 얼굴 + 이름 + ▾ + ✕. 테두리가 있는 칩 모양이라 누를 수 있는 것이 보이게(#5).
+  /// 본체를 누르면 누구로 볼지 바꾸기, ✕는 이 낱말을 검색어에서 빼기(#15)
   Widget personChip(BuildContext context, Map<String, dynamic> w) {
     final cs = Theme.of(context).colorScheme;
     final chosen = ints(w['chosen']);
+    final word = w['word'] as String;
     return Material(
       color: Theme.of(context).cardTheme.color,
       shape: StadiumBorder(side: BorderSide(color: cs.primary, width: 1.5)),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: () => choose(context, w),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(4, 4, 8, 4),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            FaceAvatar(face: chosen.isEmpty ? null : people[chosen.first]?['face'] as int?, label: w['word'] as String, size: 26),
-            const SizedBox(width: 6),
-            // 검색어가 이름 그대로면 "딸(딸)"처럼 겹치지 않게 이름만, 관계 말(엄마 등)이면 "엄마: 이름"
-            Text(whoLabel(chosen).startsWith(w['word'] as String) ? whoLabel(chosen) : '${w['word']}: ${whoLabel(chosen)}'),
-            Icon(Icons.expand_more, size: 18, color: cs.onSurfaceVariant),
-          ]),
+      clipBehavior: Clip.antiAlias,
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Flexible(
+          child: InkWell(
+            onTap: () => choose(context, w),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 7, 2, 7),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                FaceAvatar(face: chosen.isEmpty ? null : people[chosen.first]?['face'] as int?, label: word, size: 26),
+                const SizedBox(width: 6),
+                // 검색어가 이름 그대로면 "딸(딸)"처럼 겹치지 않게 이름만, 관계 말(엄마 등)이면 "엄마: 이름"
+                Flexible(
+                  child: Text(whoLabel(chosen).startsWith(word) ? whoLabel(chosen) : '$word: ${whoLabel(chosen)}',
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+                Icon(Icons.expand_more, size: 18, color: cs.onSurfaceVariant),
+              ]),
+            ),
+          ),
         ),
-      ),
+        IconButton(
+          tooltip: '$word 빼기',
+          onPressed: () => dropWords([word]),
+          icon: const Icon(Icons.close),
+          iconSize: 16,
+          color: cs.onSurfaceVariant,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+        ),
+      ]),
+    );
+  }
+
+  /// 결과 화면 맨 위 얼굴 줄(#14): 결과에 든 사람은 테두리 + 체크. 누르면 더하기/빼기 후 바로 다시 검색
+  Widget faceRow(BuildContext context, List<Map<String, dynamic>> ps) {
+    final cs = Theme.of(context).colorScheme;
+    final on = {for (final w in words) ...ints(w['chosen'])};
+    return SizedBox(
+      height: MediaQuery.textScalerOf(context).scale(16) + 56, // 글자 1배에 약 72dp
+      child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 12), children: [
+        for (final p in ps)
+          Semantics(
+            key: ValueKey('face-${p['id']}'),
+            button: true,
+            selected: on.contains(p['id']),
+            label: '${p['name']} ${on.contains(p['id']) ? '빼기' : '더하기'}',
+            excludeSemantics: true,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => toggle(p['id'] as int),
+              child: SizedBox(
+                width: 56,
+                child: Column(children: [
+                  const SizedBox(height: 6),
+                  Stack(clipBehavior: Clip.none, children: [
+                    FaceAvatar(face: p['face'] as int?, label: p['name'] as String, size: 40),
+                    if (on.contains(p['id'])) ...[
+                      Positioned.fill(
+                        child: DecoratedBox(decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: cs.primary, width: 2.5))),
+                      ),
+                      Positioned(
+                        right: -3,
+                        bottom: -3,
+                        child: Container(
+                          width: 16,
+                          height: 16,
+                          decoration: BoxDecoration(color: cs.primary, shape: BoxShape.circle, border: Border.all(color: cs.surface, width: 1.5)),
+                          child: Icon(Icons.check, size: 10, color: cs.onPrimary),
+                        ),
+                      ),
+                    ],
+                  ]),
+                  const SizedBox(height: 4),
+                  Text(p['name'] as String, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, fontWeight: on.contains(p['id']) ? FontWeight.w600 : null)),
+                ]),
+              ),
+            ),
+          ),
+      ]),
     );
   }
 
@@ -215,7 +336,9 @@ class _SearchPageState extends State<SearchPage> {
   Widget results(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final list = items!;
+    final ps = people.values.toList()..sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
     return CustomScrollView(slivers: [
+      if (ps.isNotEmpty) SliverToBoxAdapter(child: faceRow(context, ps)),
       SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),

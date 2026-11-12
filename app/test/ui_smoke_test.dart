@@ -23,6 +23,7 @@ final people = [
 
 Map<String, dynamic> scenario = {};
 final thumbSizes = <int, List<int>>{}; // 사진 id → 'thumb'로 요청받은 크기들
+final searches = <String>[]; // 'search'로 받은 검색어들
 
 Future<Object?> fake(MethodCall call) async {
   switch (call.method) {
@@ -75,6 +76,24 @@ Future<Object?> fake(MethodCall call) async {
         {'id': 900, 'x': 0.3, 'y': 0.2, 'w': 0.2, 'h': 0.25, 'person': 7, 'who': 1, 'maybe': null, 'sim': 0.6},
       ]};
     case 'search':
+      final q = call.arguments['q'] as String;
+      searches.add(q);
+      if (scenario['dynamicSearch'] == true) {
+        // 검색어 낱말 중 등록 이름(조사 '과'·'와'·'의'를 떼고)은 인물 낱말, 나머지는 장면
+        final ws = <Map<String, dynamic>>[];
+        final rest = <String>[];
+        for (final tok in q.split(' ')) {
+          final f = tok.replaceAll(RegExp(r'(과|와|의)$'), '');
+          final p = people.where((p) => (p['name'] as String).replaceAll(' ', '') == f).firstOrNull;
+          if (p == null) {
+            rest.add(tok);
+          } else {
+            ws.add({'word': f, 'chosen': [p['id']], 'cands': [{'ids': [p['id']], 'note': ''}]});
+          }
+        }
+        return {'items': [{'kind': 'photo', 'cover': 102, 'date': day}], 'rest': rest.join(' '),
+                'who': ws.isEmpty ? null : ws.map((w) => w['word']).join(' · '), 'photos': 1, 'words': ws, 'hint': false};
+      }
       return {'items': [
         {'kind': 'segment', 'id': 1, 'cover': 101, 'n': 18, 'date': day, 'date_source': 'exif'},
         {'kind': 'photo', 'cover': 102, 'date': null, 'received': day},
@@ -100,6 +119,7 @@ void main() {
   setUp(() {
     scenario = {};
     thumbSizes.clear();
+    searches.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, fake);
   });
 
@@ -190,6 +210,80 @@ void main() {
     await t.pump(const Duration(milliseconds: 100));
     await t.pump(const Duration(milliseconds: 100));
     expect(find.text('장면: 바다'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  Future<void> settle(WidgetTester t) async {
+    await t.pump(const Duration(milliseconds: 100));
+    await t.pump(const Duration(milliseconds: 100));
+  }
+
+  testWidgets('검색: 결과 화면에서 인물 더하기(#14), 칩 ✕로 한 명씩 빼기(#15)', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await t.tap(find.text('딸').first); // 처음 화면 얼굴 줄: 한 명 누르면 바로 결과
+    await settle(t);
+    expect(searches.last, '딸');
+    expect(find.byTooltip('딸 빼기'), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('face-1'))); // 결과 화면 얼굴 줄에서 엄마 더하기
+    await settle(t);
+    expect(searches.last, '딸 엄마');
+    expect(find.byTooltip('딸 빼기'), findsOneWidget);
+    expect(find.byTooltip('엄마 빼기'), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('face-1'))); // 이미 든 사람은 다시 더하지 않고 뺀다
+    await settle(t);
+    expect(searches.last, '딸');
+    await t.tap(find.byKey(const ValueKey('face-2'))); // 빈칸 있는 이름은 빈칸 없이
+    await settle(t);
+    expect(searches.last, '딸 아주긴이름의할아버지');
+    await t.tap(find.byTooltip('딸 빼기'));
+    await settle(t);
+    expect(searches.last, '아주긴이름의할아버지');
+    expect(find.byTooltip('딸 빼기'), findsNothing);
+    final n = searches.length;
+    await t.tap(find.byTooltip('아주긴이름의할아버지 빼기')); // 마지막 하나, 장면 말 없음 → 처음 화면
+    await settle(t);
+    expect(searches.length, n);
+    expect(find.text('인물로 찾기'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('검색: 인물 낱말 앞쪽에 더하고, 다 빼면 장면만 검색', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await t.tap(find.text('딸과 바다'));
+    await settle(t);
+    expect(searches.last, '딸과 바다');
+    await t.tap(find.byKey(const ValueKey('face-1')));
+    await settle(t);
+    expect(searches.last, '딸과 엄마 바다'); // 맨 앞 인물 낱말들 뒤, 장면 말 앞
+    await t.tap(find.byKey(const ValueKey('face-3'))); // 얼굴 줄 토글로 빼기: 조사 붙은 낱말째
+    await settle(t);
+    expect(searches.last, '엄마 바다');
+    await t.tap(find.byTooltip('엄마 빼기'));
+    await settle(t);
+    expect(searches.last, '바다');
+    expect(find.text('장면: 바다'), findsNothing); // 인물 칩이 없으면 '이렇게 이해했어요' 줄도 없다
+    expect(find.text('인물로 찾기'), findsNothing); // 결과 화면 그대로
+    await cleanup(t);
+  });
+
+  testWidgets('검색 결과: 좁은 화면 + 큰 글씨에서 얼굴 줄·칩 둘이 넘치지 않는다', (t) async {
+    scenario['dynamicSearch'] = true;
+    t.view.physicalSize = const Size(360, 700) * 3;
+    t.view.devicePixelRatio = 3;
+    await t.pumpWidget(MaterialApp(
+      theme: buildTheme(const Color(0xFF2563EB), Brightness.light),
+      builder: (context, child) => MediaQuery(data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.3)), child: child!),
+      home: const Scaffold(body: SearchPage()),
+    ));
+    await settle(t);
+    await t.tap(find.text('딸과 바다'));
+    await settle(t);
+    await t.tap(find.byKey(const ValueKey('face-2')));
+    await settle(t);
+    expect(searches.last, '딸과 아주긴이름의할아버지 바다');
+    expect(find.byTooltip('아주긴이름의할아버지 빼기'), findsOneWidget);
     await cleanup(t);
   });
 
