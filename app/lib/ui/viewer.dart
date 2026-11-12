@@ -21,18 +21,80 @@ class PhotoViewer extends StatefulWidget {
 class _PhotoViewerState extends State<PhotoViewer> {
   late final pages = PageController(initialPage: widget.start);
   late int index = widget.start;
-  bool showFaces = true;
   final infos = <int, Map<String, dynamic>>{};
   List<Map<String, dynamic>> people = [];
 
   int get id => widget.ids[index];
   Map<String, dynamic>? get info => infos[id];
 
+  // ── 확대/축소와 넘기기(#12): 확대 중이거나 손가락이 2개 이상이면 PageView 넘기기를 끈다
+  final zooms = <int, TransformationController>{}; // 페이지 번호 → 배율
+  final fingers = <int>{}; // 지금 화면에 닿은 손가락(포인터 id)
+  bool zoomed = false; // 지금 페이지가 확대돼 있나
+  int downPage = 0; // 첫 손가락이 닿을 때의 페이지 — 두 번째 손가락이 늦게 닿으면 여기로 되돌린다
+  Offset tapAt = Offset.zero; // 두 번 탭한 곳(확대 중심)
+  bool get locked => zoomed || fingers.length >= 2;
+
+  static const zoomStep = 2.5;
+  static bool isZoomed(TransformationController c) => c.value.getMaxScaleOnAxis() > 1.01;
+
+  TransformationController zoomOf(int i) => zooms.putIfAbsent(i, () => TransformationController()..addListener(() => onZoom(i)));
+
+  void onZoom(int i) {
+    if (i != index || !mounted) return;
+    final z = isZoomed(zooms[i]!);
+    if (z != zoomed) setState(() => zoomed = z);
+  }
+
+  void fingerDown(PointerDownEvent e) {
+    if (fingers.isEmpty && pages.hasClients) downPage = (pages.page ?? index.toDouble()).round();
+    fingers.add(e.pointer);
+    if (fingers.length != 2) return;
+    // 넘기기를 끄면(setCanDrag false) Scrollable이 진행 중 드래그를 취소한다. 그 뒤 절반 넘게 끌렸던 페이지도 처음 페이지로 되돌린다
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !pages.hasClients || pages.page == null) return;
+      if ((pages.page! - downPage).abs() > 0.001) {
+        pages.animateToPage(downPage, duration: const Duration(milliseconds: 150), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  void fingerUp(PointerEvent e) {
+    if (fingers.remove(e.pointer) && fingers.length == 1) setState(() {});
+  }
+
+  /// 두 번 탭: 원래 크기면 누른 곳을 중심으로 확대, 확대돼 있으면 원래대로
+  void doubleTap() {
+    final c = zoomOf(index);
+    if (isZoomed(c)) {
+      c.value = Matrix4.identity();
+    } else {
+      c.value = Matrix4.diagonal3Values(zoomStep, zoomStep, 1)
+        ..setTranslationRaw(-tapAt.dx * (zoomStep - 1), -tapAt.dy * (zoomStep - 1), 0);
+    }
+  }
+
+  void onShowFaces() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
+    ShowFaces.on.addListener(onShowFaces);
     loadPeople().then((p) => mounted ? setState(() => people = p) : null);
     load(id);
+  }
+
+  @override
+  void dispose() {
+    ShowFaces.on.removeListener(onShowFaces);
+    for (final c in zooms.values) {
+      c.dispose();
+    }
+    pages.dispose();
+    super.dispose();
   }
 
   Future<void> load(int id) async {
@@ -184,6 +246,7 @@ class _PhotoViewerState extends State<PhotoViewer> {
   @override
   Widget build(BuildContext context) {
     final m = info;
+    final showFaces = ShowFaces.on.value;
     final faces = facesOf(id);
     final named = faces.where((f) => (f['who'] ?? f['maybe']) != null).toList();
     final names = {for (final e in people) e['id'] as int: e['name'] as String};
@@ -218,24 +281,48 @@ class _PhotoViewerState extends State<PhotoViewer> {
         ),
         body: Column(children: [
           Expanded(
-            child: PageView.builder(
-              controller: pages,
-              itemCount: widget.ids.length,
-              onPageChanged: (i) {
-                setState(() => index = i);
-                if (!infos.containsKey(widget.ids[i])) load(widget.ids[i]);
-              },
-              itemBuilder: (context, i) {
-                final pid = widget.ids[i];
-                final y = infos[pid]?['taken'] == null ? null : DateTime.fromMillisecondsSinceEpoch(infos[pid]!['taken'] as int).year;
-                return Center(
-                  child: InteractiveViewer(
-                    maxScale: 4,
-                    child: FacePhoto(pid, key: ValueKey('$pid/${infos[pid]?.hashCode}'), faces: facesOf(pid), names: labelsFor(y),
-                        who: widget.who, onFace: onFace, showBoxes: showFaces),
-                  ),
-                );
-              },
+            // 손가락 수는 PageView 바깥에서 센다(제스처 경쟁과 상관없이 모든 포인터를 본다)
+            child: Listener(
+              onPointerDown: fingerDown,
+              onPointerUp: fingerUp,
+              onPointerCancel: fingerUp,
+              child: PageView.builder(
+                controller: pages,
+                physics: locked ? const NeverScrollableScrollPhysics() : null,
+                itemCount: widget.ids.length,
+                onPageChanged: (i) {
+                  setState(() {
+                    index = i;
+                    // 다른 페이지로 넘어가면 나머지 페이지 배율은 원래대로
+                    for (final e in zooms.entries) {
+                      if (e.key != i) e.value.value = Matrix4.identity();
+                    }
+                    zoomed = zooms[i] != null && isZoomed(zooms[i]!);
+                  });
+                  if (!infos.containsKey(widget.ids[i])) load(widget.ids[i]);
+                },
+                itemBuilder: (context, i) {
+                  final pid = widget.ids[i];
+                  final y = infos[pid]?['taken'] == null ? null : DateTime.fromMillisecondsSinceEpoch(infos[pid]!['taken'] as int).year;
+                  // 확대 영역은 페이지 전체: 사진 위아래 빈 곳에서 시작해도 확대된다. 얼굴 상자는 사진 위젯 안에 그려지고
+                  // 누른 곳도 변환을 거쳐 사진 좌표로 오므로 확대 상태에서도 맞다
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onDoubleTapDown: (d) => tapAt = d.localPosition,
+                    onDoubleTap: doubleTap,
+                    child: InteractiveViewer(
+                      key: ValueKey('zoom-$i'),
+                      transformationController: zoomOf(i),
+                      minScale: 1,
+                      maxScale: 4,
+                      child: Center(
+                        child: FacePhoto(pid, key: ValueKey('$pid/${infos[pid]?.hashCode}'), faces: facesOf(pid), names: labelsFor(y),
+                            who: widget.who, onFace: onFace, showBoxes: showFaces, zoom: zoomOf(i)),
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
           ),
           if (faces.isNotEmpty)
@@ -243,13 +330,35 @@ class _PhotoViewerState extends State<PhotoViewer> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: Row(children: [
                 Expanded(
-                  child: Text(who.isEmpty ? '얼굴 ${faces.length}개 · 얼굴을 눌러 누구인지 알려 주세요' : '$who · 얼굴을 눌러 고칠 수 있어요',
+                  child: Text(
+                      !showFaces
+                          ? '얼굴 ${faces.length}개 · 얼굴 박스를 켜면 고칠 수 있어요'
+                          : who.isEmpty ? '얼굴 ${faces.length}개 · 얼굴을 눌러 누구인지 알려 주세요' : '$who · 얼굴을 눌러 고칠 수 있어요',
                       style: const TextStyle(color: Color(0xFFD1D5DB), fontSize: 13)),
                 ),
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(minimumSize: const Size(0, 36), foregroundColor: fg, side: const BorderSide(color: Color(0xFF4B5563))),
-                  onPressed: () => setState(() => showFaces = !showFaces),
-                  child: Text(showFaces ? '얼굴 숨기기' : '얼굴 보기', style: const TextStyle(fontSize: 13)),
+                // 얼굴 상자·이름표를 켜고 끄는 토글. 사진 속 얼굴을 가리는 기능으로 읽히지 않게 글자는 늘 '얼굴 박스'이고
+                // 켜짐은 체크 + 채운 배경으로 보인다. TalkBack은 Semantics 하나만 읽게(버튼 자체 읽기는 뺌)
+                Semantics(
+                  button: true,
+                  toggled: showFaces,
+                  label: '얼굴 박스',
+                  excludeSemantics: true,
+                  onTap: () => ShowFaces.set(!showFaces),
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 36),
+                      tapTargetSize: MaterialTapTargetSize.padded, // 터치 영역 48
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      foregroundColor: showFaces ? Colors.white : fg,
+                      backgroundColor: showFaces ? const Color(0xFF2563EB) : Colors.transparent,
+                      side: BorderSide(color: showFaces ? const Color(0xFF2563EB) : const Color(0xFF4B5563)),
+                    ),
+                    onPressed: () => ShowFaces.set(!showFaces),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      if (showFaces) ...[const Icon(Icons.check, size: 16), const SizedBox(width: 4)],
+                      const Text('얼굴 박스', style: TextStyle(fontSize: 13)),
+                    ]),
+                  ),
                 ),
               ]),
             ),

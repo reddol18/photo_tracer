@@ -28,6 +28,7 @@ Map<String, dynamic> lastPicks = {}; // 마지막 'search'의 picks
 Map<String, dynamic> lastSearch = {}; // 마지막 'search'의 인자(기간 from/to 포함)
 Map<String, dynamic> lastMoments = {}; // 마지막 'moments'의 인자
 final periodCalls = <Map<String, dynamic>>[]; // 'period'(기간 시트 → Kotlin When.sheet)로 받은 것
+final prefSets = <Map<String, dynamic>>[]; // 'setPref'로 받은 {key, value}
 
 /// 'period'의 가짜: 달은 그대로 기간으로, 나이는 연 나이(Kotlin When.Age 규칙을 흉내 — 규칙 자체는 Kotlin SpanTest가 본다)
 Map<String, dynamic> fakePeriod(Map<String, dynamic> a) {
@@ -56,6 +57,11 @@ Future<Object?> fake(MethodCall call) async {
       return scenario['thumb']; // 기본은 그림 없음 → 빈 칸으로 그린다
     case 'pref':
       return scenario['pref.${call.arguments['key']}'];
+    case 'setPref':
+      prefSets.add(Map<String, dynamic>.from(call.arguments as Map));
+      return null;
+    case 'photo':
+      return scenario['photo']; // 크게 보기 사진(기본은 그림 없음 → 도는 표시)
     case 'status':
       return scenario['status'] ?? status();
     case 'runs':
@@ -161,6 +167,8 @@ void main() {
     thumbSizes.clear();
     searches.clear();
     periodCalls.clear();
+    prefSets.clear();
+    ShowFaces.on.value = true;
     lastSearch = {};
     lastMoments = {};
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, fake);
@@ -659,6 +667,204 @@ void main() {
     expect(find.text('공유'), findsOneWidget);
     expect(find.text('2 / 3'), findsNothing); // 시각과 함께 한 줄
     expect(find.textContaining('2 / 3'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  // ───── 크게 보기: 얼굴 박스 켜고 끄기(#11) · 확대와 넘기기(#12)
+  bool boxesShown() =>
+      find.byWidgetPredicate((w) => w is CustomPaint && w.painter?.runtimeType.toString() == '_FaceBoxes').evaluate().isNotEmpty;
+
+  // '얼굴 박스' 토글의 켜짐: Semantics toggled와 체크 아이콘이 서로 맞아야 한다
+  bool toggleOn(WidgetTester t) {
+    final sem = t.widget<Semantics>(find.byWidgetPredicate((w) => w is Semantics && w.properties.label == '얼굴 박스'));
+    final check = find.descendant(of: find.byType(OutlinedButton), matching: find.byIcon(Icons.check)).evaluate().isNotEmpty;
+    expect(sem.properties.toggled, check);
+    expect(sem.properties.button, isTrue);
+    return check;
+  }
+
+  Future<void> photoLoad(WidgetTester t) async {
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200))); // 그림 풀기
+    await t.pump();
+    await t.pump();
+  }
+
+  testWidgets('크게 보기: 얼굴 박스 끄기는 다른 사진·다시 연 화면·재시작 후에도 그대로 (#11)', (t) async {
+    // 8x4 PNG. 다른 시험과 사진 캐시가 겹치지 않게 처음 쓰는 id로
+    scenario['photo'] = base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXYxhwwMAAAACEAAHOfCFIAAAAAElFTkSuQmCC');
+    await show(t, Scaffold(
+      body: Builder(builder: (context) => Column(children: [
+            TextButton(onPressed: () => showPhoto(context, 7901), child: const Text('사진 A')),
+            TextButton(onPressed: () => showPhoto(context, 7902), child: const Text('사진 B')),
+          ])),
+    ));
+    await t.tap(find.text('사진 A'));
+    await anim(t);
+    await photoLoad(t);
+    expect(boxesShown(), isTrue);
+    expect(toggleOn(t), isTrue);
+    expect(find.textContaining('얼굴을 눌러 고칠 수 있어요'), findsOneWidget);
+    await t.tap(find.text('얼굴 박스'));
+    await t.pump();
+    expect(boxesShown(), isFalse);
+    expect(toggleOn(t), isFalse);
+    expect(find.text('얼굴 박스'), findsOneWidget); // 글자는 켜짐·꺼짐 모두 같다
+    expect(prefSets.last, {'key': 'faces', 'value': '0'});
+    expect(find.textContaining('얼굴 박스를 켜면 고칠 수 있어요'), findsOneWidget); // 꺼진 상태임을 아래 글로
+    // 화면을 닫고 다른 사진을 열어도 숨긴 채로
+    await t.pageBack();
+    await anim(t);
+    await t.tap(find.text('사진 B'));
+    await anim(t);
+    await photoLoad(t);
+    expect(boxesShown(), isFalse);
+    expect(toggleOn(t), isFalse);
+    expect(find.textContaining('얼굴 박스를 켜면 고칠 수 있어요'), findsOneWidget);
+    // 앱을 다시 켜면 pref에서 읽는다
+    ShowFaces.on.value = true;
+    scenario['pref.faces'] = '0';
+    await t.runAsync(() => ShowFaces.load());
+    expect(ShowFaces.on.value, isFalse);
+    await t.pump();
+    // 다시 보기 → 보이고 저장
+    await t.tap(find.text('얼굴 박스'));
+    await t.pump();
+    expect(boxesShown(), isTrue);
+    expect(toggleOn(t), isTrue);
+    expect(prefSets.last, {'key': 'faces', 'value': '1'});
+    await cleanup(t);
+  });
+
+  testWidgets('크게 보기: 확대 중·두 손가락이면 넘기기를 끄고, 원래 크기면 켜고, 넘기면 배율 원래대로 (#12)', (t) async {
+    await show(t, const PhotoViewer(ids: [101, 102, 103], start: 1));
+    PageView view() => t.widget<PageView>(find.byType(PageView));
+    TransformationController zoom(int i) => t.widget<InteractiveViewer>(find.byKey(ValueKey('zoom-$i'))).transformationController!;
+    final center = t.getCenter(find.byType(PageView));
+    Future<void> doubleTap() async {
+      await t.tapAt(center);
+      await t.pump(const Duration(milliseconds: 60));
+      await t.tapAt(center);
+      await t.pump(const Duration(milliseconds: 400));
+    }
+
+    expect(view().physics, isNull);
+    // 두 번 탭 → 확대, 넘기기 꺼짐, 옆으로 밀어도 같은 사진
+    await doubleTap();
+    expect(zoom(1).value.getMaxScaleOnAxis(), closeTo(2.5, 0.01));
+    expect(view().physics, isA<NeverScrollableScrollPhysics>());
+    await t.drag(find.byType(PageView), const Offset(-300, 0));
+    await anim(t);
+    expect(find.textContaining('2 / 3'), findsOneWidget);
+    // 다시 두 번 탭 → 원래 크기, 넘기기 켜짐
+    await doubleTap();
+    expect(zoom(1).value.getMaxScaleOnAxis(), closeTo(1, 0.001));
+    expect(view().physics, isNull);
+    // 손가락 두 개가 닿으면 꺼지고, 떼면 켜진다
+    final a = await t.startGesture(center - const Offset(60, 0));
+    final b = await t.startGesture(center + const Offset(60, 0));
+    await t.pump();
+    expect(view().physics, isA<NeverScrollableScrollPhysics>());
+    // 벌렸다 오므리기: 확대했다가 원래 크기로
+    for (var k = 0; k < 4; k++) {
+      await a.moveBy(const Offset(-20, 0));
+      await b.moveBy(const Offset(20, 0));
+      await t.pump();
+    }
+    expect(zoom(1).value.getMaxScaleOnAxis(), greaterThan(1.5));
+    for (var k = 0; k < 6; k++) {
+      await a.moveBy(const Offset(20, 0));
+      await b.moveBy(const Offset(-20, 0));
+      await t.pump();
+    }
+    expect(zoom(1).value.getMaxScaleOnAxis(), closeTo(1, 0.001)); // minScale 1
+    expect(view().physics, isA<NeverScrollableScrollPhysics>()); // 손가락이 아직 둘
+    await a.up();
+    await b.up();
+    await t.pump();
+    expect(view().physics, isNull);
+    await t.pump(const Duration(milliseconds: 50));
+    // 두 번째 손가락이 늦게 닿아 이미 넘기기가 시작됐으면 처음 페이지로 되돌린다
+    final c = await t.startGesture(center);
+    await c.moveBy(const Offset(-24, 0)); // 넘기기 문턱(18)은 넘고 확대 이동 문턱(36)은 안 넘게
+    await t.pump();
+    await c.moveBy(const Offset(-236, 0));
+    await t.pump();
+    expect(view().controller!.page, greaterThan(1.3));
+    final d = await t.startGesture(center + const Offset(0, 80));
+    await anim(t);
+    expect(view().physics, isA<NeverScrollableScrollPhysics>());
+    expect(view().controller!.page, closeTo(1, 0.001));
+    await c.up();
+    await d.up();
+    await anim(t);
+    expect(find.textContaining('2 / 3'), findsOneWidget);
+    expect(view().physics, isNull);
+    // 거의 원래 크기(넘기기 켜짐)로 남은 페이지는 다른 페이지로 넘어가면 원래대로
+    zoom(1).value = Matrix4.diagonal3Values(1.005, 1.005, 1);
+    await t.pump();
+    expect(view().physics, isNull);
+    await t.drag(find.byType(PageView), const Offset(-300, 0));
+    await anim(t);
+    expect(find.textContaining('3 / 3'), findsOneWidget);
+    await t.drag(find.byType(PageView), const Offset(300, 0));
+    await anim(t);
+    expect(find.textContaining('2 / 3'), findsOneWidget);
+    expect(zoom(1).value, Matrix4.identity());
+    await cleanup(t);
+  });
+
+  testWidgets('크게 보기: 확대한 상태에서도 얼굴 상자를 누르면 그 얼굴이 잡힌다 (#12)', (t) async {
+    scenario['photo'] = base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXYxhwwMAAAACEAAHOfCFIAAAAAElFTkSuQmCC');
+    await show(t, const PhotoViewer(ids: [7903]));
+    await photoLoad(t);
+    // 사진 가운데보다 왼쪽 위를 두 번 탭해 확대(얼굴 상자가 화면 안에 남게)
+    final photo = find.byType(AspectRatio).last;
+    Offset onPhoto(double x, double y) {
+      final box = t.renderObject<RenderBox>(photo);
+      return box.localToGlobal(Offset(box.size.width * x, box.size.height * y));
+    }
+    Offset faceCenter() => onPhoto(0.4, 0.325); // 상자 x .3~.5, y .2~.45
+    final at = faceCenter();
+    final zoomAt = onPhoto(0.25, 0.2); // 확대 중심(이 점만 제자리)
+    await t.tapAt(zoomAt);
+    await t.pump(const Duration(milliseconds: 60));
+    await t.tapAt(zoomAt);
+    await t.pump(const Duration(milliseconds: 400));
+    final zoom = t.widget<InteractiveViewer>(find.byKey(const ValueKey('zoom-0'))).transformationController!;
+    expect(zoom.value.getMaxScaleOnAxis(), closeTo(2.5, 0.01));
+    expect(faceCenter(), isNot(at)); // 확대로 화면 위 위치가 바뀌었다
+    await t.tapAt(faceCenter());
+    await t.pump(const Duration(milliseconds: 400)); // 두 번 탭 대기 시간이 지나야 한 번 탭으로 정해진다
+    await anim(t);
+    expect(find.text('이 얼굴은 누구인가요?'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('크게 보기: 확대해도 이름표 화면 크기가 같고 얼굴 상자 바로 아래 가운데를 따라간다', (t) async {
+    scenario['photo'] = base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXYxhwwMAAAACEAAHOfCFIAAAAAElFTkSuQmCC');
+    await show(t, const PhotoViewer(ids: [7904]));
+    await photoLoad(t);
+    await t.pump();
+    final label = find.byKey(const ValueKey('face-label-900'));
+    expect(label, findsOneWidget);
+    final photo = find.byType(AspectRatio).last;
+    Offset onPhoto(double x, double y) {
+      final box = t.renderObject<RenderBox>(photo);
+      return box.localToGlobal(Offset(box.size.width * x, box.size.height * y));
+    }
+    final before = t.getRect(label); // getRect는 확대 변환까지 거친 화면 위 사각형
+    // 얼굴(x .3~.5, 아래 끝 y .45)이 화면에 남게 왼쪽 위를 중심으로 2.5배
+    final zoom = t.widget<InteractiveViewer>(find.byKey(const ValueKey('zoom-0'))).transformationController!;
+    final c = t.renderObject<RenderBox>(find.byKey(const ValueKey('zoom-0'))).globalToLocal(onPhoto(0.3, 0.3));
+    zoom.value = Matrix4.diagonal3Values(2.5, 2.5, 1)..setTranslationRaw(-c.dx * 1.5, -c.dy * 1.5, 0);
+    await t.pump();
+    final after = t.getRect(label);
+    expect(after.width, closeTo(before.width, 0.5));
+    expect(after.height, closeTo(before.height, 0.5));
+    // 위치: 상자 아래 끝 바로 아래(화면 4px 틈), 상자 가운데에 맞춤
+    final boxBottom = onPhoto(0.4, 0.45);
+    expect(after.center.dx, closeTo(boxBottom.dx, 0.5));
+    expect(after.top, closeTo(boxBottom.dy + 4, 0.5));
     await cleanup(t);
   });
 

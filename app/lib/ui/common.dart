@@ -38,6 +38,22 @@ class Look {
   }
 }
 
+/// 사진 크게 보기의 얼굴 상자 보기/숨기기. 앱 전체에서 하나, 다시 켜도 그대로(#11)
+class ShowFaces {
+  static final on = ValueNotifier(true);
+
+  static Future<void> load() async {
+    try {
+      on.value = await pref('faces') != '0';
+    } catch (_) {} // 채널이 아직 없으면(테스트) 기본값
+  }
+
+  static Future<void> set(bool v) async {
+    on.value = v;
+    await setPref('faces', v ? '1' : '0');
+  }
+}
+
 /// 흰(어두운) 바탕에 대표 색 하나만 쓰는 깔끔한 테마. 카드는 그림자 없이 옅은 테두리
 ThemeData buildTheme(Color accent, Brightness b) {
   final dark = b == Brightness.dark;
@@ -534,12 +550,17 @@ class Thumb extends StatelessWidget {
 
 /// 사진 위에 얼굴 상자. 얼굴 위치는 사진 대비 0~1이라, 디코드한 사진 비율대로 자리를 잡고 그 위에 그린다
 class FacePhoto extends StatefulWidget {
-  const FacePhoto(this.id, {super.key, this.faces = const [], this.names = const {}, this.who, this.onFace, this.showBoxes = true});
+  const FacePhoto(this.id,
+      {super.key, this.faces = const [], this.names = const {}, this.who, this.onFace, this.showBoxes = true, this.zoom});
   final int id;
   final List<Map<String, dynamic>> faces;
   final Map<int, String> names;
   final int? who;
   final bool showBoxes;
+
+  /// 이 사진을 감싼 InteractiveViewer의 배율(TransformationController). 주면 이름표 크기·상자 테두리 두께가
+  /// 확대해도 화면에서 같게 보인다. 바뀔 때 상자·이름표 층만 다시 그린다(사진·페이지는 그대로)
+  final ValueListenable<Matrix4>? zoom;
   final void Function(Map<String, dynamic> face)? onFace;
 
   @override
@@ -579,21 +600,88 @@ class _FacePhotoState extends State<FacePhoto> {
                 },
                 child: Stack(fit: StackFit.expand, children: [
                   Image.memory(data, fit: BoxFit.fill, gaplessPlayback: true),
-                  if (widget.showBoxes) CustomPaint(painter: _FaceBoxes(widget.faces, widget.names, widget.who)),
+                  if (widget.showBoxes)
+                    Positioned.fill(
+                      child: widget.zoom == null
+                          ? _boxes(1)
+                          : ValueListenableBuilder<Matrix4>(
+                              valueListenable: widget.zoom!,
+                              builder: (context, m, _) => _boxes(m.getMaxScaleOnAxis()),
+                            ),
+                    ),
                 ]),
               ),
             ),
           );
         },
       );
+
+  /// 상자(그림)와 이름표(위젯) 층. s는 바깥 확대 배율 — 이름표는 1/s로 되돌려 화면 크기를 지킨다.
+  /// 이름표는 누름을 받지 않아(IgnorePointer) 얼굴 탭 판정은 그대로 사진 좌표로 된다
+  Widget _boxes(double s) {
+    final labels = <Widget>[];
+    for (final f in widget.faces) {
+      final person = f['who'] as int?;
+      final maybe = f['maybe'] as int?;
+      final id = person ?? maybe;
+      if (id == null || widget.names[id] == null) continue;
+      final rel = Rect.fromLTWH(
+          (f['x'] as num).toDouble(), (f['y'] as num).toDouble(), (f['w'] as num).toDouble(), (f['h'] as num).toDouble());
+      labels.add(CustomSingleChildLayout(
+        delegate: _LabelAt(rel, s),
+        child: Transform.scale(
+          scale: 1 / s,
+          alignment: Alignment.topLeft,
+          child: DecoratedBox(
+            key: ValueKey('face-label-${f['id']}'),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Text('${widget.names[id]}${maybe != null ? '?' : ''}',
+                  maxLines: 1,
+                  softWrap: false,
+                  textScaler: TextScaler.noScaling, // 예전 그림 이름표처럼 사진을 덜 가리게 고정 크기
+                  style: const TextStyle(color: Color(0xFF111827), fontSize: 12, fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ),
+      ));
+    }
+    return Stack(fit: StackFit.expand, children: [
+      CustomPaint(painter: _FaceBoxes(widget.faces, widget.who, s)),
+      IgnorePointer(child: Stack(fit: StackFit.expand, children: labels)),
+    ]);
+  }
 }
 
-/// 얼굴 상자: 둥근 흰 테두리, 이름표는 흰 바탕 둥근 글자. 맞는지 모르는 얼굴은 이름 뒤에 '?'
+/// 이름표 자리: 얼굴 상자 바로 아래 가운데. 이름표는 1/s로 줄어 보이므로 화면 크기(child/s)로 사진 안에 맞춰 민다
+class _LabelAt extends SingleChildLayoutDelegate {
+  _LabelAt(this.rel, this.s);
+  final Rect rel; // 사진 대비 0~1 얼굴 상자
+  final double s;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) => const BoxConstraints();
+
+  @override
+  Offset getPositionForChild(Size size, Size child) {
+    final w = child.width / s, h = child.height / s;
+    final cx = (rel.left + rel.width / 2) * size.width, bottom = rel.bottom * size.height;
+    final x = (cx - w / 2).clamp(0.0, size.width > w ? size.width - w : 0.0);
+    final y = (bottom + 4 / s).clamp(0.0, size.height > h ? size.height - h : 0.0);
+    return Offset(x, y);
+  }
+
+  @override
+  bool shouldRelayout(_LabelAt old) => old.rel != rel || old.s != s;
+}
+
+/// 얼굴 상자: 둥근 흰 테두리(확대 배율 s로 나눠 화면에서 같은 두께). 이름표는 _FacePhotoState._boxes의 위젯
 class _FaceBoxes extends CustomPainter {
-  _FaceBoxes(this.faces, this.names, this.who);
+  _FaceBoxes(this.faces, this.who, this.s);
   final List<Map<String, dynamic>> faces;
-  final Map<int, String> names;
   final int? who;
+  final double s;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -607,24 +695,11 @@ class _FaceBoxes extends CustomPainter {
           RRect.fromRectAndRadius(r, Radius.circular(r.width * 0.18)),
           Paint()
             ..style = PaintingStyle.stroke
-            ..strokeWidth = mine ? 3 : 2
+            ..strokeWidth = (mine ? 3 : 2) / s
             ..color = person != null || mine ? Colors.white : Colors.white60);
-      final id = person ?? maybe;
-      if (id == null || names[id] == null) continue;
-      final tp = TextPainter(
-        text: TextSpan(text: '${names[id]}${maybe != null ? '?' : ''}',
-            style: const TextStyle(color: Color(0xFF111827), fontSize: 12, fontWeight: FontWeight.w600)),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      // 사진 밖으로 글자가 잘리지 않게: 얼굴 아래에, 오른쪽 끝에서는 왼쪽으로 민다
-      final w = tp.width + 12, h = tp.height + 4;
-      final x = r.center.dx.clamp(w / 2, size.width - w / 2) - w / 2;
-      final y = (r.bottom + 4).clamp(0.0, size.height - h);
-      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(x, y, w, h), const Radius.circular(8)), Paint()..color = Colors.white);
-      tp.paint(canvas, Offset(x + 6, y + 2));
     }
   }
 
   @override
-  bool shouldRepaint(_FaceBoxes old) => old.faces != faces || old.names != names || old.who != who;
+  bool shouldRepaint(_FaceBoxes old) => old.faces != faces || old.who != who || old.s != s;
 }

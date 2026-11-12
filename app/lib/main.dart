@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -25,6 +25,7 @@ const channel = MethodChannel('app');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Look.load();
+  await ShowFaces.load();
   final onboarded = await pref('onboarded') == '1';
   runApp(PhotoTracerApp(onboarded: onboarded));
 }
