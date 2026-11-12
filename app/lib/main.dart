@@ -10,6 +10,7 @@ import 'vendors.dart';
 part 'ui/common.dart';
 part 'ui/onboarding.dart';
 part 'ui/home.dart';
+part 'ui/period_sheet.dart';
 part 'ui/night.dart';
 part 'ui/search.dart';
 part 'ui/people.dart';

@@ -17,30 +17,51 @@ class Moments(ctx: Context) {
         const val COVERS = 3
     }
 
-    /** 최근 순간부터 limit개. 각 순간: id, start, end(ms), n(장 수, 인물을 고르면 그 인물 사진 수), covers(사진 id), people(등록 인물 id) */
-    fun list(offset: Int, limit: Int, person: Long?): List<Map<String, Any?>> {
+    /**
+     * 최근 순간부터 limit개. 각 순간: id, start, end(ms), n(장 수, 인물을 고르면 그 인물 사진 수), covers(사진 id), people(등록 인물 id)
+     * span(#17 기간 거르기): 기간과 겹치는 순간만(Span.segmentSql). 걸리면 n·표지·순간 사진도 기간 안 날짜의 사진만이라
+     *   해를 넘긴 여행도 '2023년'으로 거르면 2023년 사진만 보인다.
+     */
+    fun list(offset: Int, limit: Int, person: Long?, span: Span? = null): List<Map<String, Any?>> {
         val rows = ArrayList<LongArray>()
-        val sql = if (person == null) "SELECT id, start, end, n FROM segments ORDER BY start DESC LIMIT $limit OFFSET $offset"
-        else """SELECT s.id, s.start, s.end, COUNT(DISTINCT f.photo_id) FROM segments s
+        val sql = when {
+            person == null && span == null -> "SELECT id, start, end, n FROM segments ORDER BY start DESC LIMIT $limit OFFSET $offset"
+            person == null -> """SELECT id, start, "end", c FROM (SELECT s.id, s.start, s."end",
+                (SELECT COUNT(*) FROM photos p WHERE p.segment = s.id AND ${span!!.photoSql("p.")}) c
+                FROM segments s WHERE ${span.segmentSql("s.")}) WHERE c > 0 ORDER BY start DESC LIMIT $limit OFFSET $offset"""
+            else -> """SELECT s.id, s.start, s.end, COUNT(DISTINCT f.photo_id) FROM segments s
                 JOIN photos p ON p.segment = s.id JOIN faces f ON f.photo_id = p.id
-                WHERE $MINE GROUP BY s.id ORDER BY s.start DESC LIMIT $limit OFFSET $offset"""
+                WHERE $MINE${if (span != null) " AND ${span.segmentSql("s.")} AND ${span.photoSql("p.")}" else ""}
+                GROUP BY s.id ORDER BY s.start DESC LIMIT $limit OFFSET $offset"""
+        }
         db.readableDatabase.rawQuery(sql, if (person == null) null else arrayOf(person.toString())).use {
             while (it.moveToNext()) rows.add(longArrayOf(it.getLong(0), it.getLong(1), it.getLong(2), it.getLong(3)))
         }
         return rows.map { (id, start, end, n) ->
-            mapOf("id" to id, "start" to start, "end" to end, "n" to n.toInt(), "covers" to photos(id, person, COVERS), "people" to people(id))
+            mapOf("id" to id, "start" to start, "end" to end, "n" to n.toInt(), "covers" to photos(id, person, COVERS, span), "people" to people(id))
         }
     }
 
-    /** 순간의 사진. 인물을 주면 그 인물이 나온 사진만. limit을 주면 표지용(실사 아닌 이미지는 뒤로, 대표 사진 먼저) */
-    fun photos(segment: Long, person: Long?, limit: Int? = null): List<Long> {
+    /** 사진이 있는 해와 그해 사진 수(#17 기간 시트), 최근 해부터. 날짜는 Span과 같은 기준(찍은 날, 없으면 받은 날), 폰의 시간대로 */
+    fun years(): List<Map<String, Any?>> {
+        val out = ArrayList<Map<String, Any?>>()
+        db.readableDatabase.rawQuery("""SELECT CAST(strftime('%Y', COALESCE(taken_at, received_at) / 1000, 'unixepoch', 'localtime') AS INTEGER) y, COUNT(*)
+                FROM photos WHERE COALESCE(taken_at, received_at) IS NOT NULL GROUP BY y ORDER BY y DESC""", null).use {
+            while (it.moveToNext()) if (!it.isNull(0)) out.add(mapOf("year" to it.getInt(0), "n" to it.getInt(1)))
+        }
+        return out
+    }
+
+    /** 순간의 사진. 인물을 주면 그 인물이 나온 사진만. limit을 주면 표지용(실사 아닌 이미지는 뒤로, 대표 사진 먼저). span: 기간 안 날짜의 사진만 */
+    fun photos(segment: Long, person: Long?, limit: Int? = null, span: Span? = null): List<Long> {
         val lim = if (limit == null) "" else "LIMIT $limit"
+        val inSpan = if (span == null) "" else "AND ${span.photoSql("p.")}"
         val (sql, args) = if (person == null)
-            "SELECT id FROM photos WHERE segment = ?1 ORDER BY ${if (limit != null) "COALESCE(fake, 0) > 0, is_rep DESC," else ""} taken_at $lim" to
+            "SELECT id FROM photos p WHERE segment = ?1 $inSpan ORDER BY ${if (limit != null) "COALESCE(fake, 0) > 0, is_rep DESC," else ""} taken_at $lim" to
                 arrayOf(segment.toString())
         else
             """SELECT DISTINCT p.id FROM photos p JOIN faces f ON f.photo_id = p.id
-               WHERE p.segment = ?2 AND $MINE ORDER BY p.taken_at $lim""" to arrayOf(person.toString(), segment.toString())
+               WHERE p.segment = ?2 AND $MINE $inSpan ORDER BY p.taken_at $lim""" to arrayOf(person.toString(), segment.toString())
         val out = ArrayList<Long>()
         db.readableDatabase.rawQuery(sql, args).use { while (it.moveToNext()) out.add(it.getLong(0)) }
         if (limit != null && person == null) out.sortBy { id -> taken(id) } // 표지는 고른 뒤 찍은 순서로

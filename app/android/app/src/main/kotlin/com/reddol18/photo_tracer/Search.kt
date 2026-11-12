@@ -64,13 +64,20 @@ class Search(private val ctx: Context) {
     }
 
     /** 결과: kind(segment|photo), id, cover(보여 줄 사진), n(장 수), date, date_source, score(코사인), conf(0~1). 흔한 방향을 뺀 점수 높은 순 */
-    fun search(query: String, picks: Map<String, List<Long>> = emptyMap(), today: LocalDate = LocalDate.now()): Map<String, Any?> {
+    /**
+     * span(#17): 기간 시트에서 고른 기간. 주면 이것이 우선이다 — 검색어에서 읽은 시기 말은 장면 검색어에서 빼기만 하고
+     *   기간으로는 쓰지 않으며 'when'(시기 칩)도 돌려주지 않는다(칩은 화면이 고른 기간으로 그린다).
+     *   화면은 시트에서 고를 때 검색어 속 시기 말을 이미 지우므로 보통은 둘이 함께 오지 않는다.
+     *   검색어가 비어도 된다(기간만 → 그 기간의 순간을 최근 순으로).
+     */
+    fun search(query: String, picks: Map<String, List<Long>> = emptyMap(), today: LocalDate = LocalDate.now(), span: Span? = null): Map<String, Any?> {
         val t0 = System.nanoTime()
         val (words, rest0) = people(query, picks)
         // 시기 말(#16): 읽은 낱말은 장면 검색어에서 빼고, 기간으로 결과를 거른다
         val toks = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         val hit = When.parse(toks, today, { i -> words.any { isWord(toks[i], it.word) } }, FILLER)
-        val (period, whenInfo) = hit?.let { whenOf(it, toks, words, picks) } ?: (null to null)
+        val (textPeriod, whenInfo) = if (span != null) null to null else hit?.let { whenOf(it, toks, words, picks) } ?: (null to null)
+        val period = span ?: textPeriod?.let { Span.of(it) }
         val used = hit?.tokens?.toSet() ?: emptySet()
         val extra: Map<String, Any?> = if (whenInfo != null) mapOf("when" to whenInfo) else emptyMap()
         if (words.isNotEmpty()) {
@@ -82,7 +89,7 @@ class Search(private val ctx: Context) {
                 "hint" to !prefs.getBoolean("hint_seen", false)) + extra
         }
         val scene = toks.filterIndexed { i, _ -> i !in used }
-        if (hit != null && scene.all { it in FILLER }) { // 시기만: 그 기간의 순간을 최근 순으로
+        if ((hit != null || span != null) && scene.all { it in FILLER }) { // 시기만: 그 기간의 순간을 최근 순으로
             val items = periodItems(period)
             return mapOf("items" to items, "query_ms" to 0.0, "total_ms" to (System.nanoTime() - t0) / 1e6,
                          "candidates" to items.size, "rest" to "", "recent" to true) + extra
@@ -143,22 +150,20 @@ class Search(private val ctx: Context) {
         return p to info + mapOf("range" to p.label())
     }
 
-    /** 기간 안의 구간(시작~끝이 겹치는)과 구간 밖 사진(찍은 날, 없으면 받은 날 — 짐작한 날짜도 넣는다) */
-    private fun inPeriod(p: Period): Pair<Set<Long>, Set<Long>> {
-        val a = p.startMs(); val z = p.endMs()
+    /** 기간 안의 구간(시작~끝이 겹치는)과 구간 밖 사진(찍은 날, 없으면 받은 날 — 짐작한 날짜도 넣는다). 기준은 Span 한곳 */
+    private fun inPeriod(p: Span): Pair<Set<Long>, Set<Long>> {
         val ids = { sql: String -> db.readableDatabase.rawQuery(sql, null).use { c -> HashSet<Long>().also { while (c.moveToNext()) it.add(c.getLong(0)) } } }
-        return ids("SELECT id FROM segments WHERE start <= $z AND \"end\" >= $a") to
-            ids("SELECT id FROM photos WHERE segment IS NULL AND COALESCE(taken_at, received_at) BETWEEN $a AND $z")
+        return ids("SELECT id FROM segments WHERE ${p.segmentSql()}") to
+            ids("SELECT id FROM photos WHERE segment IS NULL AND ${p.photoSql()}")
     }
 
     /** 장면 말 없이 시기만 있을 때: 기간 안의 구간·구간 밖 사진을 최근 순으로(실사 아닌 이미지는 뒤로) */
-    private fun periodItems(p: Period?): List<Map<String, Any?>> {
+    private fun periodItems(p: Span?): List<Map<String, Any?>> {
         if (p == null) return emptyList()
-        val a = p.startMs(); val z = p.endMs()
         class C(val date: Long, val fake: Boolean, val item: Map<String, Any?>)
         val cs = ArrayList<C>()
         db.readableDatabase.rawQuery("""SELECT s.id, s.start, s.n, COALESCE((SELECT id FROM photos WHERE segment = s.id AND is_rep = 1 LIMIT 1),
-                (SELECT id FROM photos WHERE segment = s.id ORDER BY taken_at LIMIT 1)) FROM segments s WHERE s.start <= $z AND s."end" >= $a""", null).use {
+                (SELECT id FROM photos WHERE segment = s.id ORDER BY taken_at LIMIT 1)) FROM segments s WHERE ${p.segmentSql("s.")}""", null).use {
             while (it.moveToNext()) {
                 if (it.isNull(3)) continue
                 cs.add(C(it.getLong(1), false, mapOf("kind" to "segment", "id" to it.getLong(0), "cover" to it.getLong(3), "n" to it.getInt(2),
@@ -166,7 +171,7 @@ class Search(private val ctx: Context) {
             }
         }
         db.readableDatabase.rawQuery("""SELECT id, taken_at, received_at, date_source, COALESCE(fake, 0) FROM photos
-                WHERE segment IS NULL AND COALESCE(taken_at, received_at) BETWEEN $a AND $z""", null).use {
+                WHERE segment IS NULL AND ${p.photoSql()}""", null).use {
             val n = { i: Int -> if (it.isNull(i)) null else it.getLong(i) }
             while (it.moveToNext()) {
                 val date = n(1); val received = n(2)
@@ -344,18 +349,17 @@ class Search(private val ctx: Context) {
      * 장면 벡터는 구간 대표와 구간 밖 사진에만 있어서, 구간은 구간의 점수로 겨룬다(일반 검색과 같다).
      * 결과 칸에 ids(그 칸의 인물 사진)를 넣어, 누르면 구간 전체가 아니라 인물 사진만 보인다.
      */
-    private fun searchPeople(groups: List<Set<Long>>, words: List<String>, rest: String, t0: Long, period: Period? = null): Map<String, Any?> {
+    private fun searchPeople(groups: List<Set<Long>>, words: List<String>, rest: String, t0: Long, period: Span? = null): Map<String, Any?> {
         val ids = groups.map { photosOf(it) }.reduce { a, b -> a intersect b }
         class Row(val id: Long, val seg: Long?, val date: Long?, val received: Long?, val source: String)
         val rows = ArrayList<Row>()
-        val range = period?.let { it.startMs()..it.endMs() }
         if (ids.isNotEmpty()) db.readableDatabase.rawQuery("""SELECT id, segment, taken_at, received_at, date_source FROM photos
                 WHERE id IN (${ids.joinToString(",")}) ORDER BY taken_at DESC, received_at DESC""", null).use {
             val n = { i: Int -> if (it.isNull(i)) null else it.getLong(i) }
             while (it.moveToNext()) {
                 val r = Row(it.getLong(0), n(1), n(2), n(3), it.getString(4))
                 // 시기 말(#16): 찍은 날(없으면 받은 날)이 기간 안인 사진만. 짐작한 날짜도 넣는다
-                if (range == null || (r.date ?: r.received)?.let { d -> d in range } == true) rows.add(r)
+                if (period == null || period.hasPhoto(r.date, r.received)) rows.add(r)
             }
         }
         var tq = 0.0

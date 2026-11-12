@@ -47,6 +47,28 @@ data class Period(val start: LocalDate, val end: LocalDate) {
 }
 
 /**
+ * 기간 거르기의 한 기준(#16 검색어 시기, #17 홈·검색 시간 거르기): from~to(ms, 양 끝 포함).
+ *   구간(segments)은 구간의 시작~끝이 기간과 겹치면 넣는다.
+ *   사진은 날짜로: 찍은 날, 없으면 받은 날(짐작한 날짜도 넣는다). 날짜가 전혀 없는 사진은 기간이 걸리면 빠진다.
+ * SQL 조각(segmentSql·photoSql)과 같은 기준의 Kotlin 판정(hasSegment·hasPhoto)을 한곳에 둔다.
+ */
+class Span(val from: Long, val to: Long) {
+    fun hasSegment(start: Long, end: Long) = start <= to && end >= from
+    fun hasPhoto(taken: Long?, received: Long?) = (taken ?: received)?.let { it in from..to } == true
+
+    /** a: 표 별칭과 점("s.", "p."). 값은 숫자라 그대로 넣는다 */
+    fun segmentSql(a: String = "") = "${a}start <= $to AND ${a}\"end\" >= $from"
+    fun photoSql(a: String = "") = "COALESCE(${a}taken_at, ${a}received_at) BETWEEN $from AND $to"
+
+    companion object {
+        private const val FAR = 1L shl 52 // 한쪽만 주었을 때의 끝(SQL에 그대로 넣을 수 있는 크기)
+        fun of(p: Period, zone: ZoneId = ZoneId.systemDefault()) = Span(p.startMs(zone), p.endMs(zone))
+        /** 화면이 보낸 from/to(ms). 둘 다 없으면 거르지 않음(null) */
+        fun of(from: Long?, to: Long?): Span? = if (from == null && to == null) null else Span(from ?: -FAR, to ?: FAR)
+    }
+}
+
+/**
  * 검색어 속 시기 말(#16). 모델 없이 규칙으로 읽는다.
  *   절대 시기: 2025년, 2025, 25년, 작년, 지난해, 재작년, 올해, 3년 전, 두 해 전, 지난달, 이번 달, 3개월 전, 지난주, 어제,
  *             올여름, 지난겨울, 2023년 봄, 작년 3월, 3월, 2025년 3월 10일, 2020~2022년, 2020년부터 2022년까지
@@ -82,6 +104,44 @@ object When {
         val label: String get() = when (kind) {
             "살" -> "${n}살"; "개월" -> "${n}개월"; "유치원" -> "유치원"; "초등" -> "초등학생"; "중등" -> "중학생"; "고등" -> "고등학생"
             else -> kind
+        }
+    }
+
+    /**
+     * 나이 범위 → 기간(#17 기간 시트의 나이 탭): 두 나이의 기간을 모두 덮는 기간(앞 나이의 처음 ~ 뒤 나이의 끝).
+     * 나이 하나는 Age.period와 같은 규칙(연 나이, 크게 보기 이름표 'n살'과 같게)이라 검색어 "딸 3살 때"와 같은 기간이 된다.
+     */
+    fun ageRange(birth: Int, a: Age, b: Age = a): Period {
+        val pa = a.period(birth); val pb = b.period(birth)
+        return Period(minOf(pa.start, pb.start), maxOf(pa.end, pb.end))
+    }
+
+    /** 나이 범위의 말: "1살", "1~2살", "돌~3살", "유치원~초등학생" */
+    fun ageLabel(a: Age, b: Age = a): String = when {
+        a.label == b.label -> a.label
+        a.kind == "살" && b.kind == "살" -> "${minOf(a.n, b.n)}~${maxOf(a.n, b.n)}살"
+        else -> "${a.label}~${b.label}"
+    }
+
+    /**
+     * 기간 시트(#17)가 고른 것을 기간으로. 화면(Dart)은 날짜 계산을 하지 않고 이것만 부른다.
+     *   kind "months": y1·m1 ~ y2·m2 (한 해 전체는 1월~12월). 앞뒤가 바뀌면 바로잡는다
+     *   kind "age": birth(생년), a·b({kind: 살|개월|돌|백일|아기|유치원|초등|중등|고등, n})
+     * 결과: from·to(ms), range(기간 표시 "2023년", "2023.3~2023.8"), age(나이 말, 나이일 때만)
+     */
+    fun sheet(args: Map<String, Any?>, zone: ZoneId = ZoneId.systemDefault()): Map<String, Any?> {
+        fun int(m: Map<*, *>, k: String) = (m[k] as Number).toInt()
+        return if (args["kind"] == "age") {
+            val age = { k: String -> (args[k] as? Map<*, *>)?.let { Age(it["kind"] as String, (it["n"] as? Number)?.toInt() ?: 0, false) } }
+            val a = age("a")!!; val b = age("b") ?: a
+            val p = ageRange(int(args, "birth"), a, b)
+            mapOf("from" to p.startMs(zone), "to" to p.endMs(zone), "range" to p.label(), "age" to ageLabel(a, b))
+        } else {
+            var s = LocalDate.of(int(args, "y1"), int(args, "m1"), 1)
+            var e = LocalDate.of(int(args, "y2"), int(args, "m2"), 1)
+            if (e.isBefore(s)) s = e.also { e = s }
+            val p = Period(s, e.with(TemporalAdjusters.lastDayOfMonth()))
+            mapOf("from" to p.startMs(zone), "to" to p.endMs(zone), "range" to p.label())
         }
     }
 

@@ -30,6 +30,8 @@ class _SearchPageState extends State<SearchPage> {
   String query = ''; // 마지막으로 검색한 말. 인물 더하기·빼기(#14·#15)는 이 글자를 고쳐 다시 검색한다(따로 상태 없음)
   // 시기 칩(#16): Kotlin이 읽은 시기 말. words(검색어에서 뺄 낱말), text, range, who, need(owner|birth), cands
   Map<String, dynamic>? period;
+  // 기간 시트에서 고른 기간(#17). 있으면 이것이 시기 칩이 된다(검색어 속 시기 말은 고를 때 지운다). 새 검색어를 치면 풀린다
+  PeriodPick? range;
   static const agePick = '@나이'; // picks에서 '누구 나이인지' 고른 인물의 열쇠(인물 낱말과 겹치지 않는 말)
   // Kotlin Search와 같은 조사·군말: "딸이랑"의 낱말은 "딸", "사진"만 남으면 검색할 말이 없는 것
   static const josa = ['이하고', '이랑', '이와', '이가', '이는', '이를', '이의', '이도', '이만', '에게', '한테', '하고',
@@ -79,20 +81,25 @@ class _SearchPageState extends State<SearchPage> {
     await setPref('recent', recent.isEmpty ? null : recent.join('\n'));
   }
 
+  /// keepPicks: 결과 화면에서 고친 검색(인물 더하기·빼기, 고르기)이면 고른 인물과 시트 기간을 그대로 둔다. 새 검색어면 둘 다 푼다
   Future<void> run(String q, {bool keepPicks = false}) async {
     q = q.trim();
-    if (q.isEmpty) return;
+    if (q.isEmpty && (range == null || !keepPicks)) return; // 검색어 없이는 시트 기간만으로(결과 화면에서 고친 검색)
+    if (!keepPicks) {
+      picks.clear();
+      range = null;
+    }
     ctrl.text = q;
     query = q;
     focus.unfocus();
-    if (!keepPicks) picks.clear();
     setState(() { busy = true; error = null; });
-    remember(q);
+    if (q.isNotEmpty) remember(q);
     try {
-      final r = Map<String, dynamic>.from(await channel.invokeMethod('search', {'q': q, 'picks': picks}));
+      final r = Map<String, dynamic>.from(await channel.invokeMethod('search', {'q': q, 'picks': picks, ...?range?.args}));
       final list = (r['items'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
       final ws = ((r['words'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
-      final when = r['when'] == null ? null : Map<String, dynamic>.from(r['when'] as Map);
+      // 시기 칩은 하나: 시트 기간이 있으면 그것(Kotlin은 이때 'when'을 주지 않는다), 없으면 검색어에서 읽은 시기
+      final when = range != null ? rangeChip(range!) : r['when'] == null ? null : Map<String, dynamic>.from(r['when'] as Map);
       if ((ws.isNotEmpty || when != null) && people.isEmpty) people = {for (final e in await loadPeople()) e['id'] as int: e};
       setState(() {
         words = ws;
@@ -117,7 +124,36 @@ class _SearchPageState extends State<SearchPage> {
   void clear() {
     ctrl.clear();
     query = '';
-    setState(() { items = null; words = []; period = null; picks.clear(); });
+    setState(() { items = null; words = []; period = null; range = null; picks.clear(); });
+  }
+
+  /// 시트 기간을 #16 시기 칩과 같은 모양의 정보로: words 없음(검색어에 낱말이 없다), text·range·who·age
+  Map<String, dynamic> rangeChip(PeriodPick p) =>
+      {'words': <String>[], 'text': p.label, 'range': p.range, 'who': p.who, 'age': p.age, 'sheet': true};
+
+  /// 기간 시트(#17): '+ 기간' 칩이나 시기 칩을 누르면. 고르면 검색어 속 시기 말을 지우고 고른 기간이 칩이 된다(둘이 따로 놀지 않게)
+  Future<void> openPeriod(BuildContext context) async {
+    if (busy) return;
+    final p = period;
+    final r = await showPeriodSheet(context,
+        current: range,
+        ageTab: p?['age'] != null,
+        ageWho: p?['who'] as String?,
+        ageLabel: p?['sheet'] == true ? null : p?['age'] as String?);
+    if (r == null || !mounted) return;
+    if (r.pick == null) {
+      dropPeriod();
+      return;
+    }
+    final left = tokens(query);
+    if (p != null && p['sheet'] != true) {
+      for (final w in (p['words'] as List).cast<String>()) {
+        left.remove(w);
+      }
+    }
+    picks.remove(agePick);
+    range = r.pick;
+    run(left.where((t) => !filler.contains(t)).isEmpty ? '' : left.join(' '), keepPicks: true);
   }
 
   List<String> tokens(String q) => q.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
@@ -133,10 +169,10 @@ class _SearchPageState extends State<SearchPage> {
     for (final w in drop) {
       picks.remove(w);
     }
-    if (left.every(filler.contains)) {
+    if (left.every(filler.contains) && range == null) {
       clear();
     } else {
-      run(left.join(' '), keepPicks: true);
+      run(left.join(' '), keepPicks: true); // 시트 기간이 있으면 남은 말이 없어도 그 기간으로
     }
   }
 
@@ -168,12 +204,14 @@ class _SearchPageState extends State<SearchPage> {
   List<int> ints(dynamic l) => (l as List).map((e) => (e as num).toInt()).toList();
 
   /// 시기 빼기(#16): 검색어에서 시기 말 낱말들을(처음 나온 것 하나씩) 지우고 다시 검색. 남은 말이 없으면 처음 화면
+  /// 시트 기간(#17)이면 그 기간을 푼다(검색어에는 낱말이 없다). ✕는 둘 다 같은 동작
   void dropPeriod() {
     if (busy || period == null) return;
     final left = tokens(query);
     for (final w in (period!['words'] as List).cast<String>()) {
       left.remove(w);
     }
+    range = null;
     picks.remove(agePick);
     if (left.every(filler.contains)) {
       clear();
@@ -187,6 +225,8 @@ class _SearchPageState extends State<SearchPage> {
     final text = p['text'] as String;
     final who = p['who'] as String?;
     final head = who == null ? text : '$who $text';
+    // 시트 기간(#17): "2023년", "딸 1~2살: 2024~2025년"
+    if (p['sheet'] == true) return p['age'] == null ? p['range'] as String : '$text: ${p['range']}';
     return switch (p['need']) {
       'owner' => '$text: 누구 나이인가요?',
       'birth' => '$head: 생년을 넣어 주세요',
@@ -194,7 +234,8 @@ class _SearchPageState extends State<SearchPage> {
     };
   }
 
-  /// 시기 칩: 달력 아이콘 + 읽은 시기와 기간 + ✕. '누구 나이인가요?'면 눌러서 인물을 고른다
+  /// 시기 칩: 달력 아이콘 + 읽은 시기와 기간 + ✕. '누구 나이인가요?'면 눌러서 인물을 고른다.
+  /// 그 밖에는 누르면 기간 시트(#17): 나이 말이면 나이 탭으로(읽은 인물·나이를 미리 골라서)
   Widget periodChip(BuildContext context, Map<String, dynamic> p) {
     final cs = Theme.of(context).colorScheme;
     final ask = p['need'] == 'owner';
@@ -207,7 +248,7 @@ class _SearchPageState extends State<SearchPage> {
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Flexible(
           child: InkWell(
-            onTap: ask ? () => chooseOwner(context, p) : null,
+            onTap: ask ? () => chooseOwner(context, p) : () => openPeriod(context),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(10, 9, 2, 9),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -471,14 +512,16 @@ class _SearchPageState extends State<SearchPage> {
             if (words.isNotEmpty || period != null) ...[
               Text(hint && words.isNotEmpty ? '이렇게 이해했어요 · 눌러서 바꿀 수 있어요' : '이렇게 이해했어요', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
               const SizedBox(height: 8),
-              Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
-                for (final w in words) personChip(context, w),
-                if (period != null) periodChip(context, period!),
-                if (rest.isNotEmpty)
-                  Chip(label: Text('장면: $rest'), backgroundColor: cs.surfaceContainerHighest, side: BorderSide.none),
-              ]),
-              const SizedBox(height: 12),
             ],
+            // 칩 줄. 기간이 없으면 끝에 점선 '+ 기간'(#17) — 인물 칩이 없는 장면 검색에도 이것만은 보인다
+            Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+              for (final w in words) personChip(context, w),
+              if (period != null) periodChip(context, period!),
+              if (rest.isNotEmpty && (words.isNotEmpty || period != null))
+                Chip(label: Text('장면: $rest'), backgroundColor: cs.surfaceContainerHighest, side: BorderSide.none),
+              if (period == null) AddPeriodChip(onTap: () => openPeriod(context)),
+            ]),
+            const SizedBox(height: 12),
             Text(error ?? (list.isEmpty
                     ? (period?['need'] == 'owner')
                         ? '누구 나이인지 위 칩을 눌러 골라 주세요.'

@@ -127,8 +127,12 @@ class MainActivity : FlutterActivity() {
                 // picks: 사용자가 칩에서 바꾼 인물 풀이 {낱말: [인물 id]} (#5)
                 "search" -> bg {
                     val picks = call.argument<Map<String, List<Number>>>("picks")?.mapValues { (_, v) -> v.map { it.toLong() } } ?: emptyMap()
-                    Search(this).search(call.argument<String>("q") ?: "", picks)
+                    // from/to(ms): 기간 시트에서 고른 기간(#17), 검색어 속 시기 말보다 우선
+                    Search(this).search(call.argument<String>("q") ?: "", picks, span = span(call))
                 }
+                // 기간 시트(#17): 고른 달·나이를 기간으로(When.sheet), 사진이 있는 해와 사진 수
+                "period" -> bg { When.sheet(call.arguments as Map<String, Any?>) }
+                "yearCounts" -> bg { Moments(this).years() }
                 "searchHintSeen" -> bg { Search(this).hintSeen() }
                 "gender" -> bg { Search(this).gender() }
                 "setGender" -> bg { Search(this).setGender(call.argument<String>("g")) }
@@ -215,9 +219,11 @@ class MainActivity : FlutterActivity() {
                 // 홈: 순간(시간 구간) 목록과 한 순간의 사진, 인물을 고르면 그 인물만
                 "moments" -> bg {
                     Moments(this).list(call.argument<Number>("offset")?.toInt() ?: 0, call.argument<Number>("limit")?.toInt() ?: 40,
-                        call.argument<Number>("person")?.toLong())
+                        call.argument<Number>("person")?.toLong(), span(call))
                 }
-                "momentPhotos" -> bg { Moments(this).photos(call.argument<Number>("id")!!.toLong(), call.argument<Number>("person")?.toLong()) }
+                "momentPhotos" -> bg {
+                    Moments(this).photos(call.argument<Number>("id")!!.toLong(), call.argument<Number>("person")?.toLong(), span = span(call))
+                }
                 "reviewQueue" -> bg { Moments(this).review(call.argument<Number>("limit")?.toInt() ?: 100) }
                 // 사진 크게 보기의 공유·갤러리에서 열기: 사진 원본은 다른 앱이 MediaStore 주소로 읽는다
                 "share", "openInGallery" -> {
@@ -302,6 +308,10 @@ class MainActivity : FlutterActivity() {
 
     /** 묶음의 표지 얼굴: 가장 큰 얼굴 */
     private fun longs(v: List<Number>?): List<Long> = v?.map { it.toLong() } ?: emptyList()
+
+    /** 화면이 보낸 기간 거르기 from/to(ms, #17). 없으면 null(거르지 않음) */
+    private fun span(call: io.flutter.plugin.common.MethodCall): Span? =
+        Span.of(call.argument<Number>("from")?.toLong(), call.argument<Number>("to")?.toLong())
 
     private fun cover(db: Db, person: Long): Long =
         db.readableDatabase.rawQuery("SELECT id FROM faces WHERE person = ? ORDER BY w * h DESC LIMIT 1", arrayOf(person.toString()))

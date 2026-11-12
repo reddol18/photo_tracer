@@ -15,6 +15,8 @@ class _HomePageState extends State<HomePage> {
   final moments = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> people = [];
   int? person; // 고른 인물, null이면 전체
+  // 기간 거르기(#17): 인물과 함께 걸린다. 탭을 옮겨도 남고(IndexedStack이 상태를 둔다) 앱을 다시 켜면 풀린다
+  PeriodPick? range;
   bool loading = false, end = false;
   int lastSegments = -1, lastPeopleDone = -1;
 
@@ -48,31 +50,48 @@ class _HomePageState extends State<HomePage> {
         people = p..sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
         moments.clear();
         end = false;
+        gen++;
+        loading = false;
       });
       await more();
     } catch (_) {}
   }
 
+  int gen = 0; // 거르기를 바꾸면 늘린다: 바꾸기 전에 보낸 요청의 답은 버린다
+
   Future<void> more() async {
     if (loading || end) return;
     loading = true;
+    final g = gen;
     try {
-      final r = await channel.invokeMethod('moments', {'offset': moments.length, 'limit': page, 'person': person});
+      final r = await channel.invokeMethod('moments', {'offset': moments.length, 'limit': page, 'person': person, ...?range?.args});
       final list = (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
-      if (mounted) {
+      if (mounted && g == gen) {
         setState(() {
           moments.addAll(list);
           end = list.length < page;
         });
       }
     } finally {
-      loading = false;
+      if (g == gen) loading = false;
     }
   }
 
   void pick(int? id) {
     if (person == id) return;
     setState(() => person = id);
+    reload();
+  }
+
+  Future<void> openPeriod() async {
+    final r = await showPeriodSheet(context, current: range);
+    if (r == null || !mounted) return;
+    setRange(r.pick);
+  }
+
+  void setRange(PeriodPick? p) {
+    if (p == null && range == null) return;
+    setState(() => range = p);
     reload();
   }
 
@@ -92,7 +111,7 @@ class _HomePageState extends State<HomePage> {
         month = key;
         rows.add(SectionLabel(key));
       }
-      rows.add(Padding(padding: const EdgeInsets.only(bottom: 12), child: MomentCard(m, names: names, person: person)));
+      rows.add(Padding(padding: const EdgeInsets.only(bottom: 12), child: MomentCard(m, names: names, person: person, range: range)));
     }
     return RefreshIndicator(
       onRefresh: () async {
@@ -110,22 +129,43 @@ class _HomePageState extends State<HomePage> {
           ),
           const SliverToBoxAdapter(child: NightBanner()),
           const SliverToBoxAdapter(child: FirstNightCard()),
-          if (people.isNotEmpty)
+          // 칩 줄: 맨 앞 '기간'(#17) + 전체/인물. 새 줄을 늘리지 않고 가로로 넘긴다. 큰 글씨면 줄 높이만 조금 는다
+          if (people.isNotEmpty || moments.isNotEmpty || range != null)
             SliverToBoxAdapter(
               child: SizedBox(
-                height: 52,
+                height: 12 + (MediaQuery.textScalerOf(context).scale(20) + 16).clamp(40.0, 60.0),
                 child: ListView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   children: [
-                    _PersonChip(label: '전체', on: person == null, onTap: () => pick(null)),
-                    for (final p in people)
-                      _PersonChip(label: p['name'] as String, face: p['face'] as int?, on: person == p['id'], onTap: () => pick(p['id'] as int)),
+                    PeriodFilterChip(pick: range, onOpen: openPeriod, onClear: () => setRange(null)),
+                    if (people.isNotEmpty) ...[
+                      _PersonChip(label: '전체', on: person == null, onTap: () => pick(null)),
+                      for (final p in people)
+                        _PersonChip(label: p['name'] as String, face: p['face'] as int?, on: person == p['id'], onTap: () => pick(p['id'] as int)),
+                    ],
                   ],
                 ),
               ),
             ),
-          if (moments.isEmpty)
+          if (moments.isEmpty && range != null && !loading)
+            SliverToBoxAdapter(
+              child: Padding(
+                key: const ValueKey('period-empty'),
+                padding: const EdgeInsets.fromLTRB(32, 40, 32, 32),
+                child: Column(children: [
+                  Icon(Icons.event_busy, size: 40, color: cs.onSurfaceVariant),
+                  const SizedBox(height: 12),
+                  const Text('맞는 순간이 없어요', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 6),
+                  Text(person != null ? '${range!.label}에 이 사람이 나온 순간을 찾지 못했어요.' : '${range!.label}에 찍은 순간을 찾지 못했어요.',
+                      textAlign: TextAlign.center, style: TextStyle(color: cs.onSurfaceVariant, height: 1.5)),
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(onPressed: () => setRange(null), icon: const Icon(Icons.close), label: const Text('기간 풀기')),
+                ]),
+              ),
+            )
+          else if (moments.isEmpty)
             SliverToBoxAdapter(
               child: ListenableBuilder(
                 listenable: Status.i,
@@ -191,10 +231,11 @@ class _PersonChip extends StatelessWidget {
 
 /// 순간 하나: 사진 1~3장 모음 + 날짜 + "사진 48장 · 엄마, 딸"
 class MomentCard extends StatelessWidget {
-  const MomentCard(this.m, {super.key, required this.names, this.person});
+  const MomentCard(this.m, {super.key, required this.names, this.person, this.range});
   final Map<String, dynamic> m;
   final Map<int, Map<String, dynamic>> names;
   final int? person;
+  final PeriodPick? range; // 기간으로 걸렀으면 순간 사진도 그 기간 안의 것만(#17)
 
   @override
   Widget build(BuildContext context) {
@@ -272,7 +313,7 @@ class MomentCard extends StatelessWidget {
             builder: (_) => PhotosPage(
               title: title,
               subtitle: '사진 ${fmtInt(n)}장${who.isEmpty ? '' : ' · ${who.join(', ')}'}',
-              load: () => channel.invokeMethod('momentPhotos', {'id': m['id'], 'person': person}),
+              load: () => channel.invokeMethod('momentPhotos', {'id': m['id'], 'person': person, ...?range?.args}),
             ),
           ),
         ),

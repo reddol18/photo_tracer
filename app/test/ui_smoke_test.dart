@@ -25,9 +25,32 @@ Map<String, dynamic> scenario = {};
 final thumbSizes = <int, List<int>>{}; // 사진 id → 'thumb'로 요청받은 크기들
 final searches = <String>[]; // 'search'로 받은 검색어들
 Map<String, dynamic> lastPicks = {}; // 마지막 'search'의 picks
+Map<String, dynamic> lastSearch = {}; // 마지막 'search'의 인자(기간 from/to 포함)
+Map<String, dynamic> lastMoments = {}; // 마지막 'moments'의 인자
+final periodCalls = <Map<String, dynamic>>[]; // 'period'(기간 시트 → Kotlin When.sheet)로 받은 것
+
+/// 'period'의 가짜: 달은 그대로 기간으로, 나이는 연 나이(Kotlin When.Age 규칙을 흉내 — 규칙 자체는 Kotlin SpanTest가 본다)
+Map<String, dynamic> fakePeriod(Map<String, dynamic> a) {
+  int from(int y, int m) => DateTime(y, m).millisecondsSinceEpoch;
+  if (a['kind'] == 'age') {
+    final birth = a['birth'] as int, x = a['a']['n'] as int, z = a['b']['n'] as int;
+    final y1 = birth + x, y2 = birth + z;
+    return {'from': from(y1, 1), 'to': from(y2 + 1, 1) - 1, 'range': y1 == y2 ? '$y1년' : '$y1~$y2년',
+            'age': x == z ? '$x살' : '$x~$z살'};
+  }
+  final y1 = a['y1'] as int, m1 = a['m1'] as int, y2 = a['y2'] as int, m2 = a['m2'] as int;
+  return {'from': from(y1, m1), 'to': from(y2, m2 + 1) - 1,
+          'range': y1 == y2 && m1 == 1 && m2 == 12 ? '$y1년' : '$y1.$m1~$y2.$m2'};
+}
 
 Future<Object?> fake(MethodCall call) async {
   switch (call.method) {
+    case 'yearCounts':
+      return [{'year': 2025, 'n': 1204}, {'year': 2023, 'n': 840}, {'year': 2019, 'n': 12}];
+    case 'period':
+      final a = Map<String, dynamic>.from(call.arguments as Map);
+      periodCalls.add(a);
+      return fakePeriod(a);
     case 'thumb':
       thumbSizes.putIfAbsent((call.arguments['id'] as num).toInt(), () => []).add(call.arguments['size'] as int);
       return scenario['thumb']; // 기본은 그림 없음 → 빈 칸으로 그린다
@@ -43,6 +66,8 @@ Future<Object?> fake(MethodCall call) async {
     case 'people':
       return people;
     case 'moments':
+      lastMoments = Map<String, dynamic>.from(call.arguments as Map);
+      if (scenario['noMomentsInRange'] == true && call.arguments['from'] != null) return [];
       if (scenario['moments'] != null) return call.arguments['offset'] == 0 ? scenario['moments'] : [];
       return [
         for (var i = 0; i < 5; i++)
@@ -79,6 +104,7 @@ Future<Object?> fake(MethodCall call) async {
     case 'search':
       final q = call.arguments['q'] as String;
       searches.add(q);
+      lastSearch = Map<String, dynamic>.from(call.arguments as Map);
       lastPicks = Map<String, dynamic>.from(call.arguments['picks'] as Map? ?? {});
       if (scenario['dynamicSearch'] == true) {
         // 검색어 낱말 중 등록 이름(조사 '과'·'와'·'의'를 떼고)은 인물 낱말, 나머지는 장면.
@@ -106,7 +132,7 @@ Future<Object?> fake(MethodCall call) async {
         }
         return {'items': [{'kind': 'photo', 'cover': 102, 'date': day}], 'rest': rest.join(' '),
                 'who': ws.isEmpty ? null : ws.map((w) => w['word']).join(' · '), 'photos': 1, 'words': ws, 'hint': false,
-                'when': when};
+                'when': call.arguments['from'] != null ? null : when}; // 시트 기간이 오면 Kotlin은 시기 칩을 주지 않는다(#17)
       }
       return {'items': [
         {'kind': 'segment', 'id': 1, 'cover': 101, 'n': 18, 'date': day, 'date_source': 'exif'},
@@ -134,6 +160,9 @@ void main() {
     scenario = {};
     thumbSizes.clear();
     searches.clear();
+    periodCalls.clear();
+    lastSearch = {};
+    lastMoments = {};
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, fake);
   });
 
@@ -371,6 +400,229 @@ void main() {
     await settle(t);
     expect(searches.last, '딸과 아주긴이름의할아버지 바다');
     expect(find.byTooltip('아주긴이름의할아버지 빼기'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  // ───── 기간 거르기(#17)
+  Future<void> anim(WidgetTester t) async {
+    for (var i = 0; i < 6; i++) {
+      await t.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  Future<void> pickYear(WidgetTester t, int y) async {
+    await anim(t);
+    expect(find.text('기간으로 거르기'), findsOneWidget);
+    await t.tap(find.byKey(ValueKey('year-$y')));
+    await anim(t);
+    await t.tap(find.text('$y년 보기'));
+    await anim(t);
+  }
+
+  testWidgets('홈: 기간 칩 → 시트에서 연도 → 칩이 "2023년"으로, 인물과 함께, ✕로 풀기 (#17)', (t) async {
+    await show(t, const Shell());
+    expect(find.text('기간'), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await anim(t);
+    expect(find.text('1,204장'), findsOneWidget); // 사진이 있는 해와 사진 수
+    expect(find.text('인물 나이'), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('year-2023')));
+    await anim(t);
+    await t.tap(find.text('2023년 보기'));
+    await anim(t);
+    expect(find.text('기간으로 거르기'), findsNothing);
+    expect(find.text('2023년'), findsOneWidget);
+    expect(find.text('기간'), findsNothing);
+    expect(lastMoments['from'], DateTime(2023).millisecondsSinceEpoch);
+    expect(lastMoments['to'], DateTime(2024).millisecondsSinceEpoch - 1);
+    await t.tap(find.text('딸').first); // 인물 거르기와 함께
+    await settle(t);
+    expect(lastMoments['person'], 3);
+    expect(lastMoments['from'], DateTime(2023).millisecondsSinceEpoch);
+    // 다시 열면 고른 해가 그대로
+    await t.tap(find.text('2023년'));
+    await anim(t);
+    expect(find.text('2023년 보기'), findsOneWidget);
+    await t.tap(find.text('풀기')); // 시트의 '풀기'
+    await anim(t);
+    expect(find.text('기간'), findsOneWidget);
+    expect(lastMoments['from'], isNull);
+    expect(lastMoments['person'], 3);
+    // 칩의 ✕
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await pickYear(t, 2025);
+    expect(find.text('2025년'), findsOneWidget);
+    await t.tap(find.byTooltip('기간 풀기'));
+    await settle(t);
+    expect(find.text('기간'), findsOneWidget);
+    expect(lastMoments['from'], isNull);
+    await cleanup(t);
+  });
+
+  testWidgets('홈: 기간에 맞는 순간이 없으면 빈 화면과 풀기 (#17)', (t) async {
+    scenario['noMomentsInRange'] = true;
+    await show(t, const Shell());
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await pickYear(t, 2019);
+    expect(find.text('맞는 순간이 없어요'), findsOneWidget);
+    expect(find.textContaining('사진 48장'), findsNothing);
+    await t.tap(find.text('기간 풀기'));
+    await settle(t);
+    expect(find.text('맞는 순간이 없어요'), findsNothing);
+    expect(find.textContaining('사진 48장'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('홈: 기간 시트 나이 탭 — 두 나이 사이 범위와 미리보기, 직접 고르기 (#17)', (t) async {
+    await show(t, const Shell());
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await anim(t);
+    await t.tap(find.text('인물 나이'));
+    await anim(t);
+    expect(find.text('누구 나이로?'), findsOneWidget);
+    expect(find.byKey(const ValueKey('age-who-2')), findsNothing); // 생년 없는 인물은 안 나온다
+    await t.tap(find.byKey(const ValueKey('age-who-3')));
+    await t.tap(find.byKey(const ValueKey('age-1살')));
+    await t.tap(find.byKey(const ValueKey('age-2살')));
+    await anim(t);
+    expect(periodCalls.last, {'kind': 'age', 'birth': 2018, 'a': {'kind': '살', 'n': 1}, 'b': {'kind': '살', 'n': 2}});
+    expect(find.text('딸 1~2살 → 2019년 1월 ~ 2020년 12월'), findsOneWidget);
+    await t.tap(find.text('딸 1~2살 보기'));
+    await anim(t);
+    expect(find.text('딸 1~2살'), findsOneWidget);
+    expect(lastMoments['from'], DateTime(2019).millisecondsSinceEpoch);
+    await cleanup(t);
+  });
+
+  testWidgets('홈: 생년 있는 인물이 없으면 나이 탭에 안내 (#17)', (t) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'people') return [for (final p in people) {...p, 'birth_year': null}];
+      return fake(call);
+    });
+    await show(t, const Shell());
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await anim(t);
+    await t.tap(find.text('인물 나이'));
+    await anim(t);
+    expect(find.text('인물에 생년을 넣으면 나이로 거를 수 있어요.'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('검색: 결과 화면 "+ 기간" → 고르면 시기 칩 하나, 인물 빼도 남고 ✕로 풀기 (#17)', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await type(t, '딸 바다');
+    expect(find.byKey(const ValueKey('add-period-chip')), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('add-period-chip')));
+    await pickYear(t, 2025);
+    expect(searches.last, '딸 바다');
+    expect(lastSearch['from'], DateTime(2025).millisecondsSinceEpoch);
+    expect(find.byKey(const ValueKey('period-chip')), findsOneWidget);
+    expect(find.text('2025년'), findsOneWidget);
+    expect(find.byKey(const ValueKey('add-period-chip')), findsNothing);
+    await t.tap(find.byTooltip('딸 빼기')); // 인물을 빼도 기간은 그대로
+    await settle(t);
+    expect(searches.last, '바다');
+    expect(lastSearch['from'], DateTime(2025).millisecondsSinceEpoch);
+    expect(find.text('2025년'), findsOneWidget);
+    await t.tap(find.byTooltip('2025년 빼기'));
+    await settle(t);
+    expect(searches.last, '바다');
+    expect(lastSearch['from'], isNull);
+    expect(find.byKey(const ValueKey('add-period-chip')), findsOneWidget);
+    // 새 검색어를 치면 시트 기간은 풀린다
+    await t.tap(find.byKey(const ValueKey('add-period-chip')));
+    await pickYear(t, 2023);
+    expect(lastSearch['from'], isNotNull);
+    await type(t, '캠핑');
+    expect(lastSearch['from'], isNull);
+    await cleanup(t);
+  });
+
+  testWidgets('검색: 검색어 시기(#16) 칩을 눌러 시트에서 고르면 시기 말을 지우고 칩 하나로 (#17)', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await type(t, '딸 작년 바다');
+    expect(find.text('작년: 2025년'), findsOneWidget);
+    expect(find.byKey(const ValueKey('add-period-chip')), findsNothing); // 기간이 있으면 '+ 기간' 없음
+    await t.tap(find.text('작년: 2025년'));
+    await pickYear(t, 2023);
+    expect(searches.last, '딸 바다'); // 검색어 속 '작년'은 지우고
+    expect(lastSearch['from'], DateTime(2023).millisecondsSinceEpoch); // 고른 기간으로
+    expect(find.text('작년: 2025년'), findsNothing);
+    expect(find.byKey(const ValueKey('period-chip')), findsOneWidget);
+    expect(find.text('2023년'), findsOneWidget);
+    // 시기 말뿐인 검색어: 시트로 바꾸면 검색어 없이 기간만으로, ✕면 처음 화면
+    await type(t, '작년');
+    await t.tap(find.text('작년: 2025년'));
+    await pickYear(t, 2019);
+    expect(searches.last, '');
+    expect(lastSearch['from'], DateTime(2019).millisecondsSinceEpoch);
+    expect(find.text('2019년'), findsOneWidget);
+    final n = searches.length;
+    await t.tap(find.byTooltip('2019년 빼기'));
+    await settle(t);
+    expect(searches.length, n);
+    expect(find.text('인물로 찾기'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('검색: 나이 말 칩을 누르면 나이 탭으로, 읽은 인물·나이가 골라져 있다 (#17)', (t) async {
+    scenario['dynamicSearch'] = true;
+    await show(t, const Scaffold(body: SearchPage()));
+    await type(t, '1살 때');
+    await t.tap(find.text('1살 때: 누구 나이인가요?'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('2018년생'));
+    await settle(t);
+    await t.tap(find.text('딸 1살 때: 2019년'));
+    await anim(t);
+    expect(find.text('누구 나이로?'), findsOneWidget);
+    expect(find.text('딸 1살 → 2019년 1월 ~ 2019년 12월'), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('age-3살')));
+    await anim(t);
+    await t.tap(find.text('딸 1~3살 보기'));
+    await anim(t);
+    expect(searches.last, ''); // '1살 때'는 지웠다
+    expect(lastPicks.containsKey('@나이'), isFalse);
+    expect(find.text('딸 1~3살: 2019~2021년'), findsOneWidget);
+    await cleanup(t);
+  });
+
+  testWidgets('기간: 좁은 화면(360) + 큰 글씨(1.3배)에서 홈 칩 줄·시트·검색 칩이 넘치지 않는다 (#17)', (t) async {
+    scenario['dynamicSearch'] = true;
+    t.view.physicalSize = const Size(360, 700) * 3;
+    t.view.devicePixelRatio = 3;
+    Widget big(Widget w) => MaterialApp(
+          theme: buildTheme(const Color(0xFF2563EB), Brightness.light),
+          builder: (context, child) => MediaQuery(data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.3)), child: child!),
+          home: w,
+        );
+    await t.pumpWidget(big(const Shell()));
+    await settle(t);
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await anim(t);
+    await t.tap(find.byKey(const ValueKey('year-2023')));
+    await anim(t);
+    await t.tap(find.text('인물 나이'));
+    await anim(t);
+    await t.tap(find.byKey(const ValueKey('age-who-3')));
+    await t.tap(find.byKey(const ValueKey('age-백일')));
+    await t.tap(find.byKey(const ValueKey('age-3살')));
+    await anim(t);
+    await t.tap(find.byKey(const ValueKey('period-apply')));
+    await anim(t);
+    expect(find.byTooltip('기간 풀기'), findsOneWidget);
+    final x = t.getRect(find.byTooltip('기간 풀기'));
+    expect(x.height, greaterThanOrEqualTo(40));
+    expect(x.width, greaterThanOrEqualTo(40));
+    await t.pumpWidget(big(const Scaffold(body: SearchPage())));
+    await settle(t);
+    await type(t, '딸과 아주긴이름의할아버지 바다');
+    expect(find.byKey(const ValueKey('add-period-chip')), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('add-period-chip')));
+    await pickYear(t, 2023);
+    expect(find.byKey(const ValueKey('period-chip')), findsOneWidget);
     await cleanup(t);
   });
 
