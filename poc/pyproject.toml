@@ -22,14 +22,23 @@ export = [
     "onnx>=1.17",
     "onnxscript>=0.2",
 ]
+# 폰 화면 캡처 비식별(abstract_shot.py): 로컬 OCR. `uv run --group shots abstract_shot.py ...`
+shots = [
+    "torch>=2.5",
+    "torchvision>=0.20",
+    "easyocr>=1.7",
+]
 
 [tool.uv]
 default-groups = ["export"]
+# easyocr가 끌어오는 opencv-python-headless는 opencv-python과 같은 cv2 폴더를 덮어써 충돌한다 → 빼고 opencv-python만 쓴다
+override-dependencies = ["opencv-python-headless; sys_platform == 'never'"]
 # anaconda Python은 오래된 vcruntime140.dll(14.27)을 먼저 올려 torch·onnxruntime DLL 초기화가 실패한다
 python-preference = "only-managed"
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
