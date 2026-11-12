@@ -23,6 +23,10 @@
    화면 끝(좌우 8px)에 잘린 낱말·자모가 섞인 낱말·아바타 바로 밑 이름 자리는 길이와 관계없이 바꾼다.
    조사는 떼어 같은 이름에 맞추고 원래 조사를 그대로 붙인다. 다시 쓴 글자는 이웃 글자 전까지의 폭에 맞춘다.
    화이트리스트에는 app/android/app/src/main/kotlin/**/*.kt 의 한글도 넣는다.
+   OCR과 따로, 칩 속 아바타 오른쪽 글자가 화면 끝에 닿으면(잘린 칩) 아바타 오른쪽~화면 끝을, 줄 끝에서
+   잘린 큰 아바타는 밑 이름 자리를 바탕색으로 칠한다(한 글자·못 읽은 조각도 남지 않게).
+1-2. 가는 조각(한 변 < 36px): 화면 끝에 걸친 것, 스크롤 줄 끝에서 잘린 아바타, 탐색 막대에 가려 띠만 남은
+   썸네일도 실사(색이 많음)면 아바타·만화로 바꾼다. 자체 점검(photo_like_leftovers)도 이런 조각을 본다.
 5. 상태바: 위 68px 을 평면 바 + '9:41' 로 바꾼다(알림 아이콘에 앱·메신저 정보가 보일 수 있다).
 
 로그에는 읽은 글자 내용을 찍지 않는다(개수·크기만).
@@ -224,21 +228,7 @@ def find_photo_regions(img: np.ndarray) -> list[dict]:
         regions.append({"box": (int(x), int(y), int(bw), int(bh)), "mask": m, "comp": compm, "shape": shape,
                         "fill": float(fill)})
 
-    # 화면 좌우 끝에 걸친 가는 조각(잘린 아바타·썸네일): 위 11px 열기에서 사라지므로 열기 전 그림에서 따로 찾는다
-    n2, lab2, stats2, _ = cv2.connectedComponentsWithStats(filled_pre, 8)
-    for i in range(1, n2):
-        x, y, bw, bh, area = stats2[i]
-        if not (x <= 1 or x + bw >= w - 1) or bh < 30 or bw < 2 or bw >= 36 or area < 0.5 * bw * bh:
-            continue
-        if any(x >= r["box"][0] - 2 and x + bw <= r["box"][0] + r["box"][2] + 2 and
-               y >= r["box"][1] - 2 and y + bh <= r["box"][1] + r["box"][3] + 2 for r in regions):
-            continue
-        comp = (lab2[y:y + bh, x:x + bw] == i).astype(np.uint8) * 255
-        if gray[y:y + bh, x:x + bw][comp > 0].std() < 6:
-            continue  # 단색 막대(스크롤 표시 등)
-        compm = cv2.dilate(comp, np.ones((3, 3), np.uint8))
-        regions.append({"box": (int(x), int(y), int(bw), int(bh)), "mask": compm, "comp": compm, "shape": "rect",
-                        "fill": float(area / (bw * bh))})
+    regions += thin_pieces(img, filled_pre, regions)
 
     # 격자 맞추기: 같은 줄(세로로 많이 겹치고 높이가 비슷한) 사각 썸네일은 위아래 끝을, 같은 칸 열은
     # 좌우 끝을 맞춘다. 썸네일 아래쪽이 흰 면(캡처 속 캡처 등)이면 그 부분이 빠져 실사로 남기 때문
@@ -269,6 +259,47 @@ def find_photo_regions(img: np.ndarray) -> list[dict]:
         return a[0] >= b[0] and a[1] >= b[1] and a[0] + a[2] <= b[0] + b[2] and a[1] + a[3] <= b[1] + b[3]
     # 큰 사진 안쪽 조각(밝은 면이 열기로 떨어져 나온 것)은 큰 사진 처리에 맡긴다
     return [r for r in regions if not any(o is not r and inside(r["box"], o["box"]) for o in regions)]
+
+
+def thin_pieces(img: np.ndarray, filled_pre: np.ndarray, regions: list[dict]) -> list[dict]:
+    """11px 열기에서 사라지는 가는 조각(한 변 < 36px)을 열기 전 그림에서 따로 찾는다.
+    - 화면 좌우 끝에 걸친 세로 조각: 잘린 아바타·썸네일
+    - 화면 끝에 안 닿아도 색이 많은(실사) 조각: 가로 스크롤 줄 끝에서 잘린 아바타(세로로 김),
+      아래 탐색 막대·위 앱 바에 가려 가는 띠만 남은 썸네일(가로로 김)"""
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    n2, lab2, stats2, _ = cv2.connectedComponentsWithStats(filled_pre, 8)
+    out = []
+    for i in range(1, n2):
+        x, y, bw, bh, area = stats2[i]
+        if min(bw, bh) >= 36 or min(bw, bh) < 2 or max(bw, bh) < 30 or area < 0.5 * bw * bh:
+            continue
+        if any(x >= r["box"][0] - 2 and x + bw <= r["box"][0] + r["box"][2] + 2 and
+               y >= r["box"][1] - 2 and y + bh <= r["box"][1] + r["box"][3] + 2 for r in regions):
+            continue
+        comp = (lab2[y:y + bh, x:x + bw] == i).astype(np.uint8) * 255
+        sel = comp > 0
+        if gray[y:y + bh, x:x + bw][sel].std() < 6:
+            continue  # 단색 막대(스크롤 표시 등)
+        at_edge = (x <= 1 or x + bw >= w - 1) and bh >= 30 and bw < 36
+        if not at_edge:
+            patch = img[y:y + bh, x:x + bw][sel]
+            colors = len(np.unique((patch // 8).astype(np.int32) @ np.array([1024, 32, 1])))
+            # 아이콘·글자(색 몇 개의 경계 번짐)는 색 수가 적다. 실사 조각은 면적에 비해 색이 많다
+            strip = area >= 0.9 * bw * bh and max(bw, bh) >= 100  # 가려지고 남은 썸네일 띠(하늘 등 색이 적을 수 있다)
+            if (colors < 24) if strip else (colors < 48 or colors < 0.02 * area):
+                continue
+        # 경계의 번진 화소까지 덮도록 상자를 넓히고 연결 요소를 부풀린다. 세로 조각(잘린 아바타)은
+        # 위아래 끝이 가늘어 열기에서 떨어져 나가므로 더 넓게
+        p = 4 if bh > bw else 2
+        X0, Y0, X1, Y1 = max(0, x - p), max(0, y - p), min(w, x + bw + p), min(h, y + bh + p)
+        comp = (lab2[Y0:Y1, X0:X1] == i).astype(np.uint8) * 255
+        compm = cv2.dilate(comp, np.ones((2 * p + 1, 2 * p + 1), np.uint8))
+        core = (int(x), int(y), int(bw), int(bh))
+        x, y, bw, bh = X0, Y0, X1 - X0, Y1 - Y0
+        out.append({"box": (int(x), int(y), int(bw), int(bh)), "core": core, "mask": compm, "comp": compm, "shape": "rect",
+                    "fill": float(area / (bw * bh)), "thin": True})
+    return out
 
 
 # ---------------------------------------------------------------- 2. 만화화
@@ -491,6 +522,50 @@ def label_name(i: int) -> str:
     return "인물" + s
 
 
+def cut_edge_names(out: np.ndarray, small_avatars: list, cut_avatars: list) -> list[tuple[int, int, int, int]]:
+    """OCR에 기대지 않고 아바타 위치로 잘린 이름 조각을 바탕색으로 칠한다(칠한 상자 목록을 돌려준다).
+    a. 칩 속 아바타의 오른쪽 글자가 화면 오른쪽 끝까지 닿으면(칩이 잘림) 아바타 오른쪽~화면 끝을 칠한다.
+    b. 줄 끝에서 잘린 큰 아바타(목록·시트의 아바타 줄)는 밑 이름 자리를 잘린 쪽 끝까지 칠한다."""
+    h, w = out.shape[:2]
+    boxes = []
+
+    def paint(x0, y0, x1, y1):
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return
+        bg = np.median(out[y0:y1, x0:x1].reshape(-1, 3), axis=0).astype(np.uint8)
+        out[y0:y1, x0:x1] = bg
+        boxes.append((x0, y0, x1 - x0, y1 - y0))
+
+    others = small_avatars + [b for b, _ in cut_avatars]
+    for x, y, bw, bh in small_avatars:
+        r0 = x + bw
+        if w - r0 > 160 or r0 >= w - EDGE:
+            continue
+        if any(ox >= r0 and oy < y + bh and oy + oh > y for ox, oy, ow, oh in others):
+            continue  # 오른쪽에 다른 아바타가 있으면 칩 이름 자리가 아니라 아바타 줄이다
+        band = out[y + 2:y + bh - 2, r0 + 2:w].astype(np.int32)
+        if band.size == 0:
+            continue
+        bg = np.median(band.reshape(-1, 3), axis=0)
+        ink = (np.abs(band - bg).sum(2) > 60).any(0)
+        if ink[-EDGE:].any():
+            paint(r0 + 3, y, w, y + bh)
+    for (x, y, bw, bh), side in cut_avatars:
+        # 보이는 활꼴(폭 bw, 현 bh)에서 원 지름을 어림한다
+        r = (bh * bh / 4 + bw * bw) / (2 * max(1, bw))
+        d = min(2 * r, 2.5 * bh)
+        if d < 64:
+            continue  # 칩 속 작은 아바타: 밑은 칩 테두리·다른 줄
+        ya = int(y + bh / 2 + d / 2) + 2
+        yb = ya + int(d)  # 이름 줄은 아바타 밑 10~50px. 어림 지름이 작게 나오기 쉬워 넉넉히
+        if side == "right":
+            paint(int(x - 0.3 * d), ya, w, yb)
+        else:
+            paint(0, ya, int(x + bw + 0.3 * d), yb)
+    return boxes
+
+
 # ---------------------------------------------------------------- 5. 상태바
 
 def clean_status_bar(img: np.ndarray) -> None:
@@ -525,6 +600,8 @@ def process(path: Path, out_dir: Path, words: UiWords, ocr: Ocr, faces: Faces, a
     photo_mask = np.zeros((h, w), np.uint8)
     dbg = []  # (종류, 상자)
     avatar_boxes = []  # 이름이 밑에 붙는 아바타·얼굴 칸
+    small_avatars = []  # 온전한 그림 아바타로 바꾼 칸(칩 속 아바타 등)
+    cut_avatars = []  # 화면·스크롤 줄 끝에서 잘린 아바타 (상자, 잘린 쪽)
 
     # 1~3. 사진 영역
     for idx, r in enumerate(regions):
@@ -549,9 +626,11 @@ def process(path: Path, out_dir: Path, words: UiWords, ocr: Ocr, faces: Faces, a
             # 원 밖이지만 사진이었던 곳(연결 요소)은 아바타 바탕색으로 덮는다
             m = cv2.max(cm, m if r["shape"] == "round" else r["comp"])
             r["mask"] = m
+            cut_avatars.append((r.get("core", r["box"]), "right" if at_right else "left"))
             dbg.append(("avatar", r["box"]))
         elif small:
             new = avatar(bw, bh, idx)
+            small_avatars.append(r["box"])
             dbg.append(("avatar", r["box"]))
         else:
             new = cartoonize(patch, args.detail)
@@ -658,15 +737,22 @@ def process(path: Path, out_dir: Path, words: UiWords, ocr: Ocr, faces: Faces, a
     if pil is not None:
         out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
+    # 4-2. 잘린 이름 조각: OCR이 못 읽거나 한 글자라 UI 낱말로 보는 조각도 있으므로 OCR과 따로,
+    #      아바타 위치만 보고 보수적으로 칠한다
+    for box in cut_edge_names(out, small_avatars, cut_avatars):
+        dbg.append(("name", box))
+
     # 5. 상태바
     clean_status_bar(out)
 
-    # 자체 점검: 변환본에서 다시 사진 영역을 찾아, 색이 아주 많은(실사가 남은 듯한) 곳을 센다
+    # 자체 점검: 변환본에서 다시 사진 영역(가는 조각 포함)을 찾아, 색이 아주 많은(실사가 남은 듯한) 곳을 센다.
+    # 만화·그림 아바타는 색이 수십 개뿐이므로, 작은 조각은 면적에 비한 색 수로 본다
     leftovers = []
     for r in find_photo_regions(out):
         x, y, bw, bh = r["box"]
-        u = len(np.unique(out[y:y + bh, x:x + bw][r["mask"] > 0].reshape(-1, 3), axis=0))
-        if u > 600:
+        px = out[y:y + bh, x:x + bw][r["mask"] > 0].reshape(-1, 3)
+        u = len(np.unique(px, axis=0))
+        if u > 600 or (u > 100 and u > 0.15 * len(px)):
             leftovers.append((r["box"], u))
 
     stem = path.stem
