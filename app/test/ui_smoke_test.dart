@@ -1,7 +1,9 @@
 // 화면마다 가짜 데이터로 그려 보아 레이아웃 오류(넘침·크기 없는 목록 등)가 없는지 본다. 폰 없이 PC에서 돈다.
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show SemanticsAction;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_tracer/main.dart';
@@ -29,6 +31,40 @@ Map<String, dynamic> lastSearch = {}; // 마지막 'search'의 인자(기간 fro
 Map<String, dynamic> lastMoments = {}; // 마지막 'moments'의 인자
 final periodCalls = <Map<String, dynamic>>[]; // 'period'(기간 시트 → Kotlin When.sheet)로 받은 것
 final prefSets = <Map<String, dynamic>>[]; // 'setPref'로 받은 {key, value}
+Map<String, dynamic> lastMonthIndex = {}; // 마지막 'monthIndex'의 인자(#19)
+final momentCalls = <Map<String, dynamic>>[]; // 'moments'로 받은 인자들
+
+/// 빠른 이동 막대(#19)용 가짜 목록: 해마다 달마다 [per]개씩, 최근 순. 날짜만 있는 가짜 순간
+List<Map<String, dynamic>> fakeYears(Map<int, List<int>> ym, {int per = 3}) {
+  var id = 5000;
+  return [
+    for (final y in (ym.keys.toList()..sort((a, b) => b - a)))
+      for (final m in (ym[y]!.toList()..sort((a, b) => b - a)))
+        for (var i = 0; i < per; i++)
+          {'id': id++, 'start': DateTime(y, m, 20 - i * 5, 12).millisecondsSinceEpoch, 'end': DateTime(y, m, 20 - i * 5, 14).millisecondsSinceEpoch,
+           'n': 2, 'covers': <int>[], 'people': <int>[]},
+  ];
+}
+
+/// scenario['all']을 기간(from/to)으로 거른 목록. Kotlin과 같이 최근 순
+List<Map<String, dynamic>> allMoments(Map<String, dynamic> a) {
+  final all = (scenario['all'] as List).cast<Map<String, dynamic>>();
+  final from = a['from'] as int?, to = a['to'] as int?;
+  return [for (final m in all) if ((from == null || (m['end'] as int) >= from) && (to == null || (m['start'] as int) <= to)) m];
+}
+
+/// Kotlin MonthIndex.of와 같은 규칙(달마다 첫 위치와 개수)
+List<Map<String, int>> monthIndexOf(List<Map<String, dynamic>> list) {
+  final out = <Map<String, int>>[];
+  for (var i = 0; i < list.length; i++) {
+    final d = DateTime.fromMillisecondsSinceEpoch(list[i]['start'] as int);
+    if (out.isEmpty || out.last['year'] != d.year || out.last['month'] != d.month) {
+      out.add({'year': d.year, 'month': d.month, 'offset': i, 'n': 0});
+    }
+    out.last['n'] = out.last['n']! + 1;
+  }
+  return out;
+}
 
 /// 'period'의 가짜: 달은 그대로 기간으로, 나이는 연 나이(Kotlin When.Age 규칙을 흉내 — 규칙 자체는 Kotlin SpanTest가 본다)
 Map<String, dynamic> fakePeriod(Map<String, dynamic> a) {
@@ -71,8 +107,19 @@ Future<Object?> fake(MethodCall call) async {
       ];
     case 'people':
       return people;
+    case 'monthIndex':
+      lastMonthIndex = Map<String, dynamic>.from(call.arguments as Map);
+      if (scenario['all'] == null) return null; // 기본: 목차 없음 → 막대 숨김
+      return monthIndexOf(allMoments(lastMonthIndex));
     case 'moments':
       lastMoments = Map<String, dynamic>.from(call.arguments as Map);
+      momentCalls.add(lastMoments);
+      if (scenario['delay'] != null) await Future<void>.delayed(scenario['delay'] as Duration); // 폰처럼 답이 늦게
+      if (scenario['all'] != null) {
+        final all = allMoments(lastMoments);
+        final o = call.arguments['offset'] as int, l = call.arguments['limit'] as int;
+        return all.sublist(o.clamp(0, all.length), (o + l).clamp(0, all.length));
+      }
       if (scenario['noMomentsInRange'] == true && call.arguments['from'] != null) return [];
       if (scenario['moments'] != null) return call.arguments['offset'] == 0 ? scenario['moments'] : [];
       return [
@@ -171,6 +218,8 @@ void main() {
     ShowFaces.on.value = true;
     lastSearch = {};
     lastMoments = {};
+    lastMonthIndex = {};
+    momentCalls.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, fake);
   });
 
@@ -479,6 +528,263 @@ void main() {
     expect(find.text('맞는 순간이 없어요'), findsNothing);
     expect(find.textContaining('사진 48장'), findsOneWidget);
     await cleanup(t);
+  });
+
+  // ───── 빠른 이동 막대(#19)
+  // 2025년 10~1월, 2023년 12~7월, 2019년 5~4월, 달마다 3개 = 54개(한 번에 40개씩 불러온다)
+  Map<int, List<int>> threeYears() => {2025: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1], 2023: [12, 11, 10, 9, 8, 7], 2019: [5, 4]};
+  final bar = find.byKey(const ValueKey('year-bar'));
+
+  bool onScreen(WidgetTester t, Finder f) {
+    if (f.evaluate().isEmpty) return false;
+    final r = t.getRect(f);
+    return r.top >= 0 && r.bottom <= t.view.physicalSize.height / t.view.devicePixelRatio;
+  }
+
+  testWidgets('홈 빠른 이동: 해가 둘 이상이면 막대, 하나뿐이거나 목록이 짧으면 숨김 (#19)', (t) async {
+    // 목차가 없으면(기본 가짜) 막대 없음
+    await show(t, const Shell());
+    expect(bar, findsNothing);
+    await cleanup(t);
+    // 해 셋
+    scenario['all'] = fakeYears(threeYears());
+    await show(t, const Shell());
+    expect(bar, findsOneWidget);
+    for (final y in ["'25", "'23", "'19"]) {
+      expect(find.text(y), findsOneWidget);
+    }
+    expect(t.getSize(bar).width, greaterThanOrEqualTo(44)); // 터치 영역
+    expect(lastMonthIndex.containsKey('person'), isTrue); // 목록과 같은 거르기 조건으로 묻는다
+    await cleanup(t);
+    // 해 하나
+    scenario['all'] = fakeYears({2025: [10, 9, 8, 7, 6, 5]});
+    await show(t, const Shell());
+    expect(bar, findsNothing);
+    await cleanup(t);
+    // 해는 둘이지만 순간이 몇 개뿐(한 화면 안팎)
+    scenario['all'] = fakeYears({2025: [10], 2023: [5]}, per: 2);
+    await show(t, const Shell());
+    expect(bar, findsNothing);
+    await cleanup(t);
+  });
+
+  testWidgets('홈 빠른 이동: 해를 누르면 그 자리부터 불러와 그해 첫 달 머리글로, 위로 가면 앞쪽을 불러온다 (#19)', (t) async {
+    scenario['all'] = fakeYears(threeYears());
+    await show(t, const Shell());
+    expect(find.text('2025년 10월'), findsOneWidget);
+    expect(find.text('2019년 5월'), findsNothing); // 아직 안 불러옴(40개까지)
+    await t.tap(find.byKey(const ValueKey('bar-year-2019')));
+    await settle(t);
+    await settle(t);
+    expect(momentCalls.last['offset'], 48); // 2019년 5월은 49번째부터: 그 자리부터 불러온다
+    expect(onScreen(t, find.text('2019년 5월')), isTrue);
+    expect(find.text('2025년 10월'), findsNothing);
+    // 머리글이 맨 위 근처(제목에 가리지 않고)
+    expect(t.getRect(find.text('2019년 5월')).top, lessThan(80));
+    // 위로 끌어 올라가면 앞쪽(8~47번째)을 불러와 이어 붙인다
+    await t.drag(find.text('2019년 5월'), const Offset(0, 300));
+    await settle(t);
+    expect(momentCalls.any((c) => c['offset'] == 8 && c['limit'] == 40), isTrue);
+    expect(find.text('2023년 7월'), findsOneWidget);
+    expect(onScreen(t, find.text('2019년 5월')), isTrue); // 앞쪽이 붙어도 보던 자리는 그대로
+    // 이미 불러온 곳으로 뛰면 다시 부르지 않는다
+    final n = momentCalls.length;
+    await t.tap(find.byKey(const ValueKey('bar-year-2023')));
+    await settle(t);
+    expect(momentCalls.length, n);
+    expect(onScreen(t, find.text('2023년 12월')), isTrue);
+    await t.pump(const Duration(seconds: 2)); // 흐려지는 타이머
+    await cleanup(t);
+  });
+
+  testWidgets('홈 빠른 이동: 끄는 동안 "연월" 말풍선, 놓으면 사라지고 막대는 잠시 뒤 흐려진다 (#19)', (t) async {
+    scenario['all'] = fakeYears(threeYears());
+    await show(t, const Shell());
+    final opacity = find.ancestor(of: bar, matching: find.byType(AnimatedOpacity));
+    expect(t.widget<AnimatedOpacity>(opacity).opacity, lessThan(1)); // 평소엔 흐리게
+    final g = await t.startGesture(t.getCenter(find.byKey(const ValueKey('bar-year-2023'))));
+    await g.moveBy(const Offset(0, 20));
+    await g.moveBy(const Offset(0, 10));
+    await settle(t);
+    expect(find.byKey(const ValueKey('year-bubble')), findsOneWidget);
+    final label = t.widget<Text>(find.descendant(of: find.byKey(const ValueKey('year-bubble')), matching: find.byType(Text))).data!;
+    expect(label, matches(RegExp(r'^2023년 \d{1,2}월$')));
+    expect(t.widget<AnimatedOpacity>(opacity).opacity, 1);
+    expect(onScreen(t, find.widgetWithText(SectionLabel, label)), isTrue); // 그 달 머리글로 뛰었다
+    await g.up();
+    await settle(t);
+    expect(find.byKey(const ValueKey('year-bubble')), findsNothing);
+    await t.pump(const Duration(seconds: 2));
+    expect(t.widget<AnimatedOpacity>(opacity).opacity, lessThan(1));
+    await cleanup(t);
+  });
+
+  testWidgets('홈 빠른 이동: 기간으로 거르면 그 기간 안의 해만 (#19)', (t) async {
+    scenario['all'] = fakeYears(threeYears());
+    await show(t, const Shell());
+    await t.tap(find.byKey(const ValueKey('home-period-chip')));
+    await anim(t);
+    await t.tap(find.text('인물 나이'));
+    await anim(t);
+    await t.tap(find.byKey(const ValueKey('age-who-3')));
+    await t.tap(find.byKey(const ValueKey('age-1살')));
+    await t.ensureVisible(find.byKey(const ValueKey('age-5살')));
+    await t.tap(find.byKey(const ValueKey('age-5살')));
+    await anim(t);
+    await t.tap(find.text('딸 1~5살 보기')); // 2019~2023년
+    await anim(t);
+    expect(lastMonthIndex['from'], DateTime(2019).millisecondsSinceEpoch);
+    expect(bar, findsOneWidget);
+    expect(find.text("'23"), findsOneWidget);
+    expect(find.text("'19"), findsOneWidget);
+    expect(find.text("'25"), findsNothing);
+    await cleanup(t);
+  });
+
+  testWidgets('홈 빠른 이동: 좁은 화면 + 큰 글씨에서 막대와 카드가 겹치지 않는다, TalkBack "연도로 이동" (#19)', (t) async {
+    scenario['all'] = fakeYears(threeYears());
+    final sem = t.ensureSemantics();
+    t.view.physicalSize = const Size(320, 640) * 3;
+    t.view.devicePixelRatio = 3;
+    await t.pumpWidget(MaterialApp(
+      theme: buildTheme(const Color(0xFF2563EB), Brightness.light),
+      builder: (context, child) => MediaQuery(data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.3)), child: child!),
+      home: const Shell(),
+    ));
+    await settle(t);
+    expect(t.takeException(), isNull);
+    final barRect = t.getRect(bar);
+    final cards = find.descendant(of: find.byType(MomentCard), matching: find.byType(Card));
+    expect(cards, findsWidgets);
+    for (final e in cards.evaluate()) {
+      final r = t.getRect(find.byWidget(e.widget));
+      expect(r.right, lessThanOrEqualTo(barRect.left), reason: '카드 오른쪽 $r / 막대 $barRect');
+    }
+    // 막대는 제목·칩 줄 아래에서 시작(검색 버튼·칩을 가리지 않는다)
+    expect(barRect.top, greaterThanOrEqualTo(t.getRect(find.widgetWithIcon(IconButton, Icons.search)).bottom));
+    // TalkBack: "연도로 이동" 묶음 안에 해마다 버튼
+    expect(find.bySemanticsLabel('연도로 이동'), findsOneWidget);
+    expect(t.getSemantics(find.bySemanticsLabel('2019년')), isSemantics(label: '2019년', isButton: true, hasTapAction: true));
+    expect(t.getSemantics(find.bySemanticsLabel('2025년')), isSemantics(isSelected: true)); // 지금 보는 해
+    final node = t.getSemantics(find.bySemanticsLabel('2019년'));
+    node.owner!.performAction(node.id, SemanticsAction.tap);
+    await settle(t);
+    await settle(t);
+    expect(onScreen(t, find.text('2019년 5월')), isTrue);
+    await t.pump(const Duration(seconds: 2));
+    sem.dispose();
+    await cleanup(t);
+  });
+
+  // 폰에서 본 배치(#19 확인): 360×820dp, 상태 막대 34dp, 아래 탐색 막대. 해 아홉(빈 해 있음), 달마다 3개
+  Map<int, List<int>> nineYears() => {
+        for (final y in [2026, 2025, 2024, 2023, 2022, 2021, 2020, 2016, 2014]) y: [for (var m = 12; m >= 1; m--) m],
+      };
+
+  Future<void> phone(WidgetTester t) async {
+    t.view.physicalSize = const Size(720, 1640);
+    t.view.devicePixelRatio = 2;
+    t.view.padding = const FakeViewPadding(top: 68, bottom: 96);
+    await t.pumpWidget(MaterialApp(theme: buildTheme(const Color(0xFF2563EB), Brightness.light), home: const Shell()));
+    await settle(t);
+  }
+
+  /// 목록 맨 위(막대 윗변 근처)에 보이는 월 머리글
+  String topHeader(WidgetTester t) {
+    final top = t.getRect(bar).top;
+    final hs = find.byType(SectionLabel).evaluate().map((e) => (t.getRect(find.byWidget(e.widget)), (e.widget as SectionLabel).text)).toList()
+      ..sort((a, b) => a.$1.top.compareTo(b.$1.top));
+    return hs.where((h) => h.$1.bottom > top + 1).first.$2;
+  }
+
+  testWidgets('홈 빠른 이동(폰 배치): 한 번 뛰어 막대가 늘어난 뒤에도 누른 해로 간다 (#19)', (t) async {
+    scenario['all'] = fakeYears(nineYears());
+    scenario['delay'] = const Duration(milliseconds: 80);
+    await phone(t);
+    final firstTop = t.getRect(bar).top;
+    await t.tap(find.byKey(const ValueKey('bar-year-2020')));
+    await settle(t);
+    await settle(t);
+    expect(topHeader(t), '2020년 12월');
+    expect(t.getRect(bar).top, lessThan(firstTop)); // 제목·칩이 사라져 막대가 위로 늘었다
+    for (final y in [2020, 2023, 2016, 2021, 2014, 2025, 2025]) {
+      await t.tap(find.byKey(ValueKey('bar-year-$y')));
+      await settle(t);
+      await settle(t);
+      expect(topHeader(t), '$y년 12월', reason: "'$y 누름");
+    }
+    // 막대는 아래 탭 막대 위에서 끝난다
+    expect(t.getRect(bar).bottom, lessThanOrEqualTo(t.getRect(find.byType(NavigationBar)).top));
+    await t.pump(const Duration(seconds: 2));
+    await cleanup(t);
+    t.view.resetPadding();
+  });
+
+  testWidgets('홈 빠른 이동(폰 배치): 실제 끌기 — 말풍선·또렷함, 놓은 해가 손가락 아래 해 (#19)', (t) async {
+    scenario['all'] = fakeYears(nineYears());
+    scenario['delay'] = const Duration(milliseconds: 80);
+    await phone(t);
+    await t.tap(find.byKey(const ValueKey('bar-year-2021')));
+    await settle(t);
+    await settle(t);
+    final opacity = find.ancestor(of: bar, matching: find.byType(AnimatedOpacity));
+    final from = t.getCenter(find.byKey(const ValueKey('bar-year-2020')));
+    final to = t.getCenter(find.byKey(const ValueKey('bar-year-2024')));
+    final g = await t.startGesture(from);
+    for (var i = 1; i <= 24; i++) {
+      await g.moveTo(Offset.lerp(from, to, i / 24)!);
+      await t.pump(const Duration(milliseconds: 30));
+    }
+    await settle(t);
+    expect(find.byKey(const ValueKey('year-bubble')), findsOneWidget);
+    expect(t.widget<AnimatedOpacity>(opacity).opacity, 1);
+    final label = t.widget<Text>(find.descendant(of: find.byKey(const ValueKey('year-bubble')), matching: find.byType(Text))).data!;
+    expect(label, startsWith('2024년 '));
+    // 막대 배치가 끄는 동안 바뀌지 않아 손가락 아래 칸이 그대로 '24
+    expect(t.getRect(find.byKey(const ValueKey('bar-year-2024'))).contains(to), isTrue);
+    expect(topHeader(t), label);
+    await t.pump(const Duration(seconds: 3)); // 붙잡고 있는 동안에도 그대로
+    expect(find.byKey(const ValueKey('year-bubble')), findsOneWidget);
+    expect(t.widget<AnimatedOpacity>(opacity).opacity, 1);
+    await g.up();
+    await settle(t);
+    expect(find.byKey(const ValueKey('year-bubble')), findsNothing);
+    expect(topHeader(t), label);
+    await t.pump(const Duration(seconds: 2));
+    await cleanup(t);
+    t.view.resetPadding();
+  });
+
+  testWidgets('홈 빠른 이동: 먼 해로 뛰는 동안 목록이 비지 않는다 (#19)', (t) async {
+    scenario['all'] = fakeYears(nineYears());
+    // 'moments' 답을 늦춘다: 그사이 화면에 앞 목록이나 머리글이 있어야 한다
+    final gate = <Completer<void>>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'moments' && scenario['slow'] == true) {
+        final c = Completer<void>();
+        gate.add(c);
+        await c.future;
+      }
+      return fake(call);
+    });
+    await phone(t);
+    scenario['slow'] = true;
+    await t.tap(find.byKey(const ValueKey('bar-year-2016')));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 50));
+    expect(gate, isNotEmpty);
+    expect(find.byType(SectionLabel), findsWidgets); // 비지 않았다
+    expect(find.byType(MomentCard), findsWidgets);
+    scenario['slow'] = false;
+    for (final c in gate) {
+      c.complete();
+    }
+    await settle(t);
+    await settle(t);
+    expect(topHeader(t), '2016년 12월');
+    await t.pump(const Duration(seconds: 2));
+    await cleanup(t);
+    t.view.resetPadding();
   });
 
   testWidgets('홈: 기간 시트 나이 탭 — 두 나이 사이 범위와 미리보기, 직접 고르기 (#17)', (t) async {

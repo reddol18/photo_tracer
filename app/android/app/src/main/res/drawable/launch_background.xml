@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!-- Android 11 이하 시작 화면(#21): 위→아래 그라데이션 + 화면 정가운데 120dp 아이콘.
+     Flutter 시작 화면(lib/ui/launch.dart)이 같은 자리·크기로 이어 받는다. 색은 values(-night)/colors.xml -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
-
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:type="linear"
+                android:centerY="0.45"
+                android:startColor="@color/splash_top"
+                android:centerColor="@color/splash_center"
+                android:endColor="@color/splash_bottom" />
+        </shape>
+    </item>
+    <item
+        android:width="120dp"
+        android:height="120dp"
+        android:gravity="center"
+        android:drawable="@drawable/splash_icon" />
 </layer-list>

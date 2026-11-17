@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'vendors.dart';
 
 part 'ui/common.dart';
+part 'ui/launch.dart';
 part 'ui/onboarding.dart';
 part 'ui/home.dart';
 part 'ui/period_sheet.dart';
@@ -24,15 +25,95 @@ const channel = MethodChannel('app');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Look.load();
-  await ShowFaces.load();
-  final onboarded = await pref('onboarded') == '1';
-  runApp(PhotoTracerApp(onboarded: onboarded));
+  // 시스템 시작 화면이 보이는 동안 아이콘만 풀어 둔다(첫 프레임부터 같은 아이콘). 나머지 준비는 Flutter 시작 화면이 보이는 동안 한다
+  await Launch.prepare();
+  // 첫 프레임 전에 막대를 시작 화면 색으로(그러지 않으면 시스템 시작 화면 → Flutter 사이 한 프레임 탐색 막대가 검게 보인다)
+  SystemChrome.setSystemUIOverlayStyle(Launch.barsFor(ui.PlatformDispatcher.instance.platformBrightness));
+  runApp(const PhotoTracerApp());
 }
 
-class PhotoTracerApp extends StatelessWidget {
-  const PhotoTracerApp({super.key, required this.onboarded});
-  final bool onboarded;
+/// 앱 뿌리. 첫 프레임부터 시작 화면(lib/ui/launch.dart)을 덮어 두고, 화면 설정을 읽은 뒤 원래 첫 화면(홈 또는 처음 안내)을
+/// 그 밑에 띄운다. 홈이면 첫 목록까지 기다렸다가(최소 0.6초) 시작 화면을 걷는다
+class PhotoTracerApp extends StatefulWidget {
+  const PhotoTracerApp({super.key, this.prepare = Launch.loadPrefs, this.firstPage, this.ready});
+
+  /// 시작 화면 동안 할 준비. 돌려주는 값: 처음 안내를 봤는지
+  final Future<bool> Function() prepare;
+
+  /// 테스트용: 첫 화면과 그 화면의 준비 신호를 바꿔 끼운다(기본은 홈·처음 안내와 Launch.homeReady)
+  final Widget Function(bool onboarded)? firstPage;
+  final ValueListenable<bool>? ready;
+
+  @override
+  State<PhotoTracerApp> createState() => _PhotoTracerAppState();
+}
+
+class _PhotoTracerAppState extends State<PhotoTracerApp> {
+  final onboarded = ValueNotifier<bool?>(null); // null: 아직 화면 설정을 읽는 중
+  bool slow = false, leaving = false, gone = false, finishing = false, minPassed = false;
+  Timer? slowTimer, giveUpTimer, minTimer;
+
+  ValueListenable<bool> get ready => widget.ready ?? Launch.homeReady;
+
+  @override
+  void initState() {
+    super.initState();
+    slowTimer = Timer(Launch.slowAfter, () {
+      if (mounted && !leaving) setState(() => slow = true);
+    });
+    giveUpTimer = Timer(Launch.giveUp, finish);
+    // 최소 표시 시간: 준비가 그 전에 끝나면 이때 걷는다
+    minTimer = Timer(Launch.minShow, () {
+      minPassed = true;
+      if (finishing) leave();
+    });
+    start();
+  }
+
+  Future<void> start() async {
+    var ob = false;
+    try {
+      ob = await widget.prepare();
+    } catch (_) {}
+    if (!mounted) return;
+    onboarded.value = ob;
+    // 처음 안내는 따로 불러올 목록이 없다. 홈은 첫 목록이 올 때까지
+    if (!ob || ready.value) {
+      finish();
+    } else {
+      ready.addListener(onReady);
+    }
+  }
+
+  void onReady() {
+    if (ready.value) finish();
+  }
+
+  void finish() {
+    if (finishing || !mounted) return;
+    finishing = true;
+    ready.removeListener(onReady);
+    giveUpTimer?.cancel();
+    if (minPassed) leave();
+  }
+
+  void leave() {
+    if (!mounted) return;
+    slowTimer?.cancel();
+    setState(() => leaving = true);
+  }
+
+  @override
+  void dispose() {
+    slowTimer?.cancel();
+    giveUpTimer?.cancel();
+    minTimer?.cancel();
+    ready.removeListener(onReady);
+    onboarded.dispose();
+    super.dispose();
+  }
+
+  static Widget _first(bool ob) => ob ? const Shell() : const OnboardingPage();
 
   @override
   Widget build(BuildContext context) => ValueListenableBuilder(
@@ -43,7 +124,23 @@ class PhotoTracerApp extends StatelessWidget {
           darkTheme: buildTheme(look.accent, Brightness.dark),
           themeMode: look.mode,
           scrollBehavior: const _FastScroll(),
-          home: onboarded ? const Shell() : const OnboardingPage(),
+          home: ValueListenableBuilder<bool?>(
+            valueListenable: onboarded,
+            builder: (context, ob, _) => ob == null ? const SizedBox.shrink() : (widget.firstPage ?? _first)(ob),
+          ),
+          // 첫 화면은 늘 Stack의 0번 자리에 둔다: 시작 화면(1번)을 빼도 첫 화면 상태(목록·탭)가 그대로 이어진다
+          builder: (context, child) => Stack(fit: StackFit.expand, children: [
+            ExcludeSemantics(excluding: !leaving && !gone, child: child ?? const SizedBox.shrink()),
+            if (!gone)
+              IgnorePointer(
+                ignoring: leaving,
+                child: LaunchScreen(leaving: leaving, slow: slow, onGone: () {
+                  setState(() => gone = true);
+                  // 홈으로 넘어간 뒤 막대는 앱의 원래 색으로(앱 테마 밝기 기준)
+                  SystemChrome.setSystemUIOverlayStyle(Launch.appBars(Theme.of(context).brightness));
+                }),
+              ),
+          ]),
         ),
       );
 }

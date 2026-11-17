@@ -1,6 +1,35 @@
 package com.reddol18.photo_tracer
 
 import android.content.Context
+import java.time.Instant
+import java.time.ZoneId
+
+/**
+ * 빠른 이동 막대(#19)의 연·월 목차. starts는 목록 순서(최근 먼저)의 순간 start(ms).
+ * 달이 바뀌는 곳마다 한 줄: 그 달 첫 순간이 목록의 몇 번째(offset)인지와 그 달 순간 수(n).
+ * 목록이 최근 순이라 같은 달은 이어져 있다. 혹시 순서가 어긋나 같은 달이 다시 나오면 따로 한 줄(offset이 맞는 쪽을 지킨다).
+ */
+object MonthIndex {
+    data class Month(val year: Int, val month: Int, val offset: Int, val n: Int)
+
+    fun of(starts: List<Long>, zone: ZoneId = ZoneId.systemDefault()): List<Month> {
+        val out = ArrayList<Month>()
+        var key = -1
+        var first = 0
+        var y = 0
+        var m = 0
+        for ((i, s) in starts.withIndex()) {
+            val d = Instant.ofEpochMilli(s).atZone(zone)
+            val k = d.year * 12 + d.monthValue
+            if (k != key) {
+                if (key >= 0) out.add(Month(y, m, first, i - first))
+                key = k; first = i; y = d.year; m = d.monthValue
+            }
+        }
+        if (key >= 0) out.add(Month(y, m, first, starts.size - first))
+        return out
+    }
+}
 
 /**
  * 홈 화면용: 시간 구간(segments)을 '순간'으로 보여 준다. 구간은 갤러리를 읽자마자 생기므로 밤 정리 전에도 볼 수 있다.
@@ -22,18 +51,36 @@ class Moments(ctx: Context) {
      * span(#17 기간 거르기): 기간과 겹치는 순간만(Span.segmentSql). 걸리면 n·표지·순간 사진도 기간 안 날짜의 사진만이라
      *   해를 넘긴 여행도 '2023년'으로 거르면 2023년 사진만 보인다.
      */
+    /**
+     * 홈 목록의 SQL(LIMIT 없이): id, start, end, n을 최근 순으로. list와 monthIndex(#19)가 같은 문장을 써서
+     * '몇 번째부터'가 목록과 정확히 맞는다. 바인딩 인자는 person(?1) 하나뿐.
+     */
+    private fun listSql(person: Long?, span: Span?): String = when {
+        person == null && span == null -> "SELECT id, start, \"end\", n FROM segments ORDER BY start DESC"
+        person == null -> """SELECT id, start, "end", c FROM (SELECT s.id, s.start, s."end",
+            (SELECT COUNT(*) FROM photos p WHERE p.segment = s.id AND ${span!!.photoSql("p.")}) c
+            FROM segments s WHERE ${span.segmentSql("s.")}) WHERE c > 0 ORDER BY start DESC"""
+        else -> """SELECT s.id, s.start, s."end", COUNT(DISTINCT f.photo_id) FROM segments s
+            JOIN photos p ON p.segment = s.id JOIN faces f ON f.photo_id = p.id
+            WHERE $MINE${if (span != null) " AND ${span.segmentSql("s.")} AND ${span.photoSql("p.")}" else ""}
+            GROUP BY s.id ORDER BY s.start DESC"""
+    }
+
+    /**
+     * 빠른 이동 막대(#19): 지금 거르기(인물·기간)에서 연·월마다 목록의 몇 번째부터(offset)인지와 순간 수, 최근 달부터.
+     * 달은 화면의 월 머리글과 같은 기준(순간의 start, 폰의 시간대).
+     */
+    fun monthIndex(person: Long?, span: Span? = null): List<Map<String, Any?>> {
+        val starts = ArrayList<Long>()
+        db.readableDatabase.rawQuery("SELECT start FROM (${listSql(person, span)}) ORDER BY start DESC", if (person == null) null else arrayOf(person.toString())).use {
+            while (it.moveToNext()) starts.add(it.getLong(0))
+        }
+        return MonthIndex.of(starts).map { mapOf("year" to it.year, "month" to it.month, "offset" to it.offset, "n" to it.n) }
+    }
+
     fun list(offset: Int, limit: Int, person: Long?, span: Span? = null): List<Map<String, Any?>> {
         val rows = ArrayList<LongArray>()
-        val sql = when {
-            person == null && span == null -> "SELECT id, start, end, n FROM segments ORDER BY start DESC LIMIT $limit OFFSET $offset"
-            person == null -> """SELECT id, start, "end", c FROM (SELECT s.id, s.start, s."end",
-                (SELECT COUNT(*) FROM photos p WHERE p.segment = s.id AND ${span!!.photoSql("p.")}) c
-                FROM segments s WHERE ${span.segmentSql("s.")}) WHERE c > 0 ORDER BY start DESC LIMIT $limit OFFSET $offset"""
-            else -> """SELECT s.id, s.start, s.end, COUNT(DISTINCT f.photo_id) FROM segments s
-                JOIN photos p ON p.segment = s.id JOIN faces f ON f.photo_id = p.id
-                WHERE $MINE${if (span != null) " AND ${span.segmentSql("s.")} AND ${span.photoSql("p.")}" else ""}
-                GROUP BY s.id ORDER BY s.start DESC LIMIT $limit OFFSET $offset"""
-        }
+        val sql = "${listSql(person, span)} LIMIT $limit OFFSET $offset"
         db.readableDatabase.rawQuery(sql, if (person == null) null else arrayOf(person.toString())).use {
             while (it.moveToNext()) rows.add(longArrayOf(it.getLong(0), it.getLong(1), it.getLong(2), it.getLong(3)))
         }

@@ -10,15 +10,42 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
+/// 빠른 이동 막대(#19)의 한 달: 지금 거르기에서 목록의 몇 번째부터(offset) 몇 개(n)
+class _Month {
+  const _Month(this.year, this.month, this.offset, this.n);
+  final int year, month, offset, n;
+  int get key => year * 12 + month;
+  String get label => '$year년 $month월';
+}
+
 class _HomePageState extends State<HomePage> {
   static const page = 40;
+
+  /// 순간이 이보다 적으면(한 화면 안팎) 빠른 이동 막대를 숨긴다
+  static const barMinItems = 12;
+
+  /// 불러온 순간들. 목록 전체의 [base]번째부터 이어진 한 덩어리(먼 곳으로 뛰면 그 자리부터 다시 쌓는다)
   final moments = <Map<String, dynamic>>[];
+  int base = 0;
+
+  /// 빠른 이동으로 뛴 자리(목록 전체 기준). 이 앞의 순간은 위로 자라는 목록에 둬서, 앞쪽을 불러와도 보던 자리가 밀리지 않는다
+  int anchor = 0;
+  bool jumped = false;
+  List<_Month> months = [];
   List<Map<String, dynamic>> people = [];
   int? person; // 고른 인물, null이면 전체
   // 기간 거르기(#17): 인물과 함께 걸린다. 탭을 옮겨도 남고(IndexedStack이 상태를 둔다) 앱을 다시 켜면 풀린다
   PeriodPick? range;
-  bool loading = false, end = false;
+  bool loading = false, loadingUp = false, end = false;
   int lastSegments = -1, lastPeopleDone = -1;
+
+  final scroll = ScrollController();
+  final _stackKey = GlobalKey(), _headKey = GlobalKey(), _centerKey = GlobalKey();
+  var _monthKeys = <int, GlobalKey>{}; // 화면에 그려진 월 머리글: 지금 보는 해를 찾는 데
+  final barTop = ValueNotifier<double>(0); // 막대 윗변: 제목·칩 줄이 보이면 그 아래부터
+  final current = ValueNotifier<int?>(null); // 지금 보는 달(_Month.key)
+  final scrolling = ValueNotifier<bool>(false);
+  Timer? _calm;
 
   @override
   void initState() {
@@ -30,6 +57,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     Status.i.removeListener(onStatus);
+    _calm?.cancel();
+    scroll.dispose();
+    barTop.dispose();
+    current.dispose();
+    scrolling.dispose();
     super.dispose();
   }
 
@@ -40,32 +72,63 @@ class _HomePageState extends State<HomePage> {
     if (lastSegments >= 0 && !st.scanning && (seg != lastSegments || faces - lastPeopleDone > 500)) reload();
   }
 
+  Map<String, Object?> get filter => {'person': person, ...?range?.args};
+
   Future<void> reload() async {
     lastSegments = Status.i.segments;
     lastPeopleDone = (Status.i.s?['faces_done'] as num?)?.toInt() ?? 0;
     try {
       final p = await loadPeople();
       if (!mounted) return;
+      final wasJumped = jumped;
       setState(() {
         people = p..sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
         moments.clear();
+        base = 0;
+        anchor = 0;
+        jumped = false;
         end = false;
         gen++;
         loading = false;
+        loadingUp = false;
       });
+      if (wasJumped) _toTop();
+      loadMonths();
       await more();
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      Launch.markHomeReady(); // 시작 화면(#21)은 홈 첫 목록까지 기다린다
+    }
   }
 
   int gen = 0; // 거르기를 바꾸면 늘린다: 바꾸기 전에 보낸 요청의 답은 버린다
 
+  /// 연·월 목차(#19). 없거나 실패하면 막대를 숨긴다
+  Future<void> loadMonths() async {
+    final g = gen;
+    List<_Month> list = [];
+    try {
+      final r = await channel.invokeMethod('monthIndex', filter);
+      list = [
+        for (final e in (r as List? ?? const []))
+          _Month((e['year'] as num).toInt(), (e['month'] as num).toInt(), (e['offset'] as num).toInt(), (e['n'] as num).toInt()),
+      ];
+    } catch (_) {}
+    if (mounted && g == gen) setState(() => months = list);
+  }
+
+  Future<List<Map<String, dynamic>>> fetch(int offset, int limit) async {
+    final r = await channel.invokeMethod('moments', {'offset': offset, 'limit': limit, ...filter});
+    return (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// 아래로 이어 불러오기
   Future<void> more() async {
     if (loading || end) return;
     loading = true;
     final g = gen;
     try {
-      final r = await channel.invokeMethod('moments', {'offset': moments.length, 'limit': page, 'person': person, ...?range?.args});
-      final list = (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
+      final list = await fetch(base + moments.length, page);
       if (mounted && g == gen) {
         setState(() {
           moments.addAll(list);
@@ -76,6 +139,91 @@ class _HomePageState extends State<HomePage> {
       if (g == gen) loading = false;
     }
   }
+
+  /// 빠른 이동으로 뛰어든 뒤 위로 올라가면 앞쪽을 불러온다(위로 자라는 목록에 붙어 보던 자리가 밀리지 않는다)
+  Future<void> moreUp() async {
+    if (loadingUp || base == 0) return;
+    loadingUp = true;
+    final g = gen;
+    try {
+      final from = (base - page).clamp(0, base);
+      final list = await fetch(from, base - from);
+      if (mounted && g == gen) {
+        setState(() {
+          moments.insertAll(0, list);
+          // 그사이 목록이 줄었으면(정리 중) 더 위는 없다고 본다
+          base = list.length == base - from ? from : 0;
+        });
+      }
+    } finally {
+      if (g == gen) loadingUp = false;
+    }
+  }
+
+  // 막대를 끄는 동안 뛰기가 몰리면 마지막 것만: 앞의 불러오기가 끝나면 바로 다음 자리로
+  _Month? _pending;
+  bool _jumping = false;
+
+  void jumpTo(_Month m) {
+    _pending = m;
+    current.value = m.key;
+    if (!_jumping) _runJumps();
+  }
+
+  Future<void> _runJumps() async {
+    _jumping = true;
+    try {
+      while (_pending != null && mounted) {
+        final m = _pending!;
+        _pending = null;
+        await _jumpNow(m);
+      }
+    } finally {
+      _jumping = false;
+    }
+  }
+
+  /// 그 달 첫 순간이 맨 위(월 머리글)로 오게. 이미 불러온 범위면 그대로, 아니면 그 자리부터 다시 불러온다
+  Future<void> _jumpNow(_Month m) async {
+    final o = m.offset;
+    if (o >= base && o < base + moments.length) {
+      setState(() {
+        anchor = o;
+        jumped = true;
+      });
+      _toTop();
+      return;
+    }
+    // 먼 곳: 새 자리의 첫 페이지가 올 때까지 앞 목록을 그대로 둔다(화면이 비거나 막대가 사라지지 않게).
+    // 그동안 이어 불러오기(위·아래)는 막고, 답이 오면 한 번에 바꾼다
+    final g = ++gen;
+    loading = true;
+    loadingUp = true;
+    try {
+      final list = await fetch(o, page);
+      if (!mounted || g != gen) return;
+      setState(() {
+        moments
+          ..clear()
+          ..addAll(list);
+        base = o;
+        anchor = o;
+        jumped = true;
+        end = list.length < page;
+      });
+      _toTop();
+    } catch (_) {
+    } finally {
+      if (g == gen) {
+        loading = false;
+        loadingUp = false;
+      }
+    }
+  }
+
+  void _toTop() => WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (scroll.hasClients) scroll.jumpTo(0);
+      });
 
   void pick(int? id) {
     if (person == id) return;
@@ -97,57 +245,115 @@ class _HomePageState extends State<HomePage> {
 
   Map<int, Map<String, dynamic>> get byId => {for (final p in people) p['id'] as int: p};
 
+  bool get showBar => moments.isNotEmpty && months.map((m) => m.year).toSet().length >= 2 && months.fold(0, (s, m) => s + m.n) >= barMinItems;
+
+  /// 스크롤할 때: 막대 위치(제목 아래)와 지금 보는 달을 맞추고, 막대를 잠시 또렷하게
+  void _track() {
+    final stack = _stackKey.currentContext?.findRenderObject() as RenderBox?;
+    if (stack == null || !stack.attached) return;
+    final head = _headKey.currentContext?.findRenderObject() as RenderBox?;
+    var top = 0.0;
+    if (head != null && head.attached) {
+      top = (head.localToGlobal(Offset(0, head.size.height), ancestor: stack).dy).clamp(0.0, stack.size.height);
+    }
+    barTop.value = top;
+    // 윗변을 지난 머리글 중 가장 아래 것이 지금 달. 없으면 화면 안 첫 머리글의 바로 앞(더 최근) 달
+    int? above, below;
+    var aboveY = double.negativeInfinity, belowY = double.infinity;
+    for (final e in _monthKeys.entries) {
+      final ro = e.value.currentContext?.findRenderObject() as RenderBox?;
+      if (ro == null || !ro.attached) continue;
+      final y = ro.localToGlobal(Offset.zero, ancestor: stack).dy;
+      if (y <= top + 24) {
+        if (y > aboveY) (above, aboveY) = (e.key, y);
+      } else if (y < belowY) {
+        (below, belowY) = (e.key, y);
+      }
+    }
+    int? cur = above;
+    if (cur == null && below != null) {
+      final i = months.indexWhere((m) => m.key == below);
+      cur = i > 0 ? months[i - 1].key : below;
+    }
+    if (cur != null) current.value = cur;
+  }
+
+  bool _onScroll(ScrollNotification n) {
+    if (n.metrics.axis != Axis.vertical) return false;
+    if (n.metrics.pixels > n.metrics.maxScrollExtent - 800) more();
+    if (jumped && base > 0 && n.metrics.pixels < n.metrics.minScrollExtent + 800) moreUp();
+    if (n is ScrollUpdateNotification || n is ScrollStartNotification) {
+      _calm?.cancel();
+      scrolling.value = true;
+    } else if (n is ScrollEndNotification) {
+      _calm?.cancel();
+      _calm = Timer(const Duration(milliseconds: 1200), () => scrolling.value = false);
+    }
+    _track();
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final names = byId;
-    // 달이 바뀔 때 '2026년 10월' 머리글
-    final rows = <Widget>[];
-    String? month;
+    final bar = showBar;
+    // 달이 바뀔 때 '2026년 10월' 머리글. 순간마다 [머리글?, 카드] 묶음
+    final units = <List<Widget>>[];
+    final keys = <int, GlobalKey>{};
+    int? month;
     for (final m in moments) {
       final d = DateTime.fromMillisecondsSinceEpoch(m['start'] as int);
-      final key = '${d.year}년 ${d.month}월';
-      if (key != month) {
-        month = key;
-        rows.add(SectionLabel(key));
+      final k = d.year * 12 + d.month;
+      final u = <Widget>[];
+      if (k != month) {
+        month = k;
+        final gk = keys.containsKey(k) ? null : (keys[k] = _monthKeys[k] ?? GlobalKey());
+        u.add(SectionLabel('${d.year}년 ${d.month}월', key: gk));
       }
-      rows.add(Padding(padding: const EdgeInsets.only(bottom: 12), child: MomentCard(m, names: names, person: person, range: range)));
+      u.add(Padding(padding: const EdgeInsets.only(bottom: 12), child: MomentCard(m, names: names, person: person, range: range)));
+      units.add(u);
     }
-    return RefreshIndicator(
+    _monthKeys = keys;
+    final a = (anchor - base).clamp(0, moments.length);
+    final up = [for (final u in units.take(a)) ...u].reversed.toList();
+    final down = [for (final u in units.skip(a)) ...u];
+    final side = EdgeInsets.only(left: 16, right: bar ? _YearBar.width + 4 : 16); // 막대와 카드가 겹치지 않게
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _track();
+    });
+    final list = RefreshIndicator(
       onRefresh: () async {
         await Status.i.refresh(scan: true);
         await reload();
       },
       child: NotificationListener<ScrollNotification>(
-        onNotification: (n) {
-          if (n.metrics.pixels > n.metrics.maxScrollExtent - 800) more();
-          return false;
-        },
-        child: CustomScrollView(slivers: [
+        onNotification: _onScroll,
+        child: CustomScrollView(controller: scroll, center: jumped ? _centerKey : null, slivers: [
           SliverToBoxAdapter(
-            child: PageTitle('추억', trailing: IconButton(tooltip: '검색', icon: const Icon(Icons.search), onPressed: widget.onSearch)),
-          ),
-          const SliverToBoxAdapter(child: NightBanner()),
-          const SliverToBoxAdapter(child: FirstNightCard()),
-          // 칩 줄: 맨 앞 '기간'(#17) + 전체/인물. 새 줄을 늘리지 않고 가로로 넘긴다. 큰 글씨면 줄 높이만 조금 는다
-          if (people.isNotEmpty || moments.isNotEmpty || range != null)
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 12 + (MediaQuery.textScalerOf(context).scale(20) + 16).clamp(40.0, 60.0),
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  children: [
-                    PeriodFilterChip(pick: range, onOpen: openPeriod, onClear: () => setRange(null)),
-                    if (people.isNotEmpty) ...[
-                      _PersonChip(label: '전체', on: person == null, onTap: () => pick(null)),
-                      for (final p in people)
-                        _PersonChip(label: p['name'] as String, face: p['face'] as int?, on: person == p['id'], onTap: () => pick(p['id'] as int)),
+            child: Column(key: _headKey, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              PageTitle('추억', trailing: IconButton(tooltip: '검색', icon: const Icon(Icons.search), onPressed: widget.onSearch)),
+              const NightBanner(),
+              const FirstNightCard(),
+              // 칩 줄: 맨 앞 '기간'(#17) + 전체/인물. 새 줄을 늘리지 않고 가로로 넘긴다. 큰 글씨면 줄 높이만 조금 는다
+              if (people.isNotEmpty || moments.isNotEmpty || range != null)
+                SizedBox(
+                  height: 12 + (MediaQuery.textScalerOf(context).scale(20) + 16).clamp(40.0, 60.0),
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    children: [
+                      PeriodFilterChip(pick: range, onOpen: openPeriod, onClear: () => setRange(null)),
+                      if (people.isNotEmpty) ...[
+                        _PersonChip(label: '전체', on: person == null, onTap: () => pick(null)),
+                        for (final p in people)
+                          _PersonChip(label: p['name'] as String, face: p['face'] as int?, on: person == p['id'], onTap: () => pick(p['id'] as int)),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-            ),
+            ]),
+          ),
           if (moments.isEmpty && range != null && !loading)
             SliverToBoxAdapter(
               child: Padding(
@@ -165,7 +371,7 @@ class _HomePageState extends State<HomePage> {
                 ]),
               ),
             )
-          else if (moments.isEmpty)
+          else if (moments.isEmpty && !jumped)
             SliverToBoxAdapter(
               child: ListenableBuilder(
                 listenable: Status.i,
@@ -187,9 +393,220 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
-          SliverPadding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), sliver: SliverList.list(children: rows)),
+          // 빠른 이동으로 뛴 자리 앞의 순간들: 가운데(center) 위쪽에 놓여 위로 자란다(0번이 뛴 자리 바로 위)
+          SliverPadding(padding: side, sliver: SliverList.list(children: up)),
+          SliverPadding(key: _centerKey, padding: side.copyWith(bottom: 24), sliver: SliverList.list(children: down)),
         ]),
       ),
+    );
+    return Stack(key: _stackKey, children: [
+      Positioned.fill(child: list),
+      if (bar)
+        Positioned.fill(
+          child: _YearBar(
+            key: const ValueKey('year-bar-host'),
+            months: months,
+            top: barTop,
+            current: current,
+            scrolling: scrolling,
+            onJump: jumpTo,
+          ),
+        ),
+    ]);
+  }
+}
+
+/// 빠른 이동 막대(#19): 오른쪽 끝 연도 막대. 끌면 그 해·달로 뛰고 "2023년 12월" 말풍선, 누르면 그해 첫 달로.
+/// 평소엔 흐리게, 스크롤하거나 끄는 동안 또렷하게. 막대 밖은 손대지 않는다(목록·카드·당겨서 새로고침은 그대로).
+/// TalkBack에서는 "연도로 이동" 묶음 안의 해마다 버튼.
+class _YearBar extends StatefulWidget {
+  const _YearBar({super.key, required this.months, required this.top, required this.current, required this.scrolling, required this.onJump});
+  static const width = 44.0; // 터치 영역 44dp
+  final List<_Month> months;
+  final ValueListenable<double> top;
+  final ValueListenable<int?> current;
+  final ValueListenable<bool> scrolling;
+  final ValueChanged<_Month> onJump;
+
+  @override
+  State<_YearBar> createState() => _YearBarState();
+}
+
+class _YearBarState extends State<_YearBar> {
+  static const pill = Color(0xFF2563EB), bubbleColor = Color(0xFF1B1C1F);
+  _Month? dragging; // 끄는 중인 달(말풍선)
+  double dragY = 0;
+  double? frozenTop; // 끄는 동안 막대 윗변을 고정: 뛰면서 제목이 사라져도 손가락 아래 해가 바뀌지 않게
+  bool hold = false; // 놓은 뒤 잠시 또렷하게
+  Timer? _fade;
+
+  List<int> get years => [for (final m in widget.months) m.year].fold<List<int>>([], (l, y) => l.isEmpty || l.last != y ? (l..add(y)) : l);
+
+  @override
+  void dispose() {
+    _fade?.cancel();
+    super.dispose();
+  }
+
+  /// 막대 안 y → 해(칸을 고르게 나눔) → 그 칸 안 비율로 그해의 달(최근 달이 위)
+  _Month at(double y, double h) {
+    final ys = years;
+    final slot = h / ys.length;
+    final yi = (y / slot).floor().clamp(0, ys.length - 1);
+    final ms = widget.months.where((m) => m.year == ys[yi]).toList();
+    final f = ((y - yi * slot) / slot).clamp(0.0, 0.999);
+    return ms[(f * ms.length).floor().clamp(0, ms.length - 1)];
+  }
+
+  _Month firstOf(int year) => widget.months.firstWhere((m) => m.year == year);
+
+  final _barKey = GlobalKey(); // 해 칸들이 놓인 막대 상자
+
+  /// 손가락의 화면 좌표 → 지금 막대 상자 안의 y와 막대 높이. 늘 지금 배치(RenderBox)로 잰다
+  (double, double)? _local(Offset global) {
+    final box = _barKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize) return null;
+    final h = box.size.height;
+    return (box.globalToLocal(global).dy.clamp(0.0, h), h);
+  }
+
+  void _drag(Offset global) {
+    final p = _local(global);
+    if (p == null) return;
+    final m = at(p.$1, p.$2);
+    setState(() {
+      dragY = p.$1;
+      dragging = m;
+    });
+    if (_jumped?.key != m.key) {
+      _jumped = m;
+      widget.onJump(m);
+    }
+  }
+
+  _Month? _jumped; // 이번 끌기에서 마지막으로 뛴 달
+
+  void _release() {
+    _fade?.cancel();
+    _jumped = null;
+    setState(() {
+      dragging = null;
+      frozenTop = null;
+      hold = true;
+    });
+    _fade = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => hold = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = MediaQuery.textScalerOf(context);
+    return ValueListenableBuilder<double>(
+      valueListenable: widget.top,
+      builder: (context, liveTop, _) {
+        final top = frozenTop ?? liveTop;
+        return LayoutBuilder(builder: (context, c) {
+          final h = (c.maxHeight - top - 8).clamp(0.0, double.infinity);
+          if (h < 80) return const SizedBox.shrink(); // 제목·칩이 화면을 거의 차지하면 잠시 숨김
+          return Stack(children: [
+            Positioned(
+              right: 0,
+              top: top,
+              width: _YearBar.width,
+              height: h,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: widget.scrolling,
+                builder: (context, scrolling, child) => AnimatedOpacity(
+                  opacity: scrolling || hold || dragging != null ? 1 : 0.35,
+                  duration: const Duration(milliseconds: 200),
+                  child: child,
+                ),
+                child: GestureDetector(
+                  key: const ValueKey('year-bar'),
+                  behavior: HitTestBehavior.opaque,
+                  excludeFromSemantics: true,
+                  onTapUp: (d) {
+                    final p = _local(d.globalPosition);
+                    if (p != null) widget.onJump(firstOf(at(p.$1, p.$2).year));
+                    _release();
+                  },
+                  // 끄는 동안은 막대 윗변을 고정한다: 뛰면서 제목·칩이 사라져도 손가락 아래 해가 그대로
+                  onVerticalDragStart: (d) {
+                    _fade?.cancel();
+                    setState(() => frozenTop = top);
+                    _drag(d.globalPosition);
+                  },
+                  onVerticalDragUpdate: (d) => _drag(d.globalPosition),
+                  onVerticalDragEnd: (_) => _release(),
+                  onVerticalDragCancel: _release,
+                  child: Semantics(
+                    container: true,
+                    explicitChildNodes: true,
+                    label: '연도로 이동',
+                    child: Container(
+                      key: _barKey,
+                      margin: const EdgeInsets.fromLTRB(4, 0, 4, 0),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: ValueListenableBuilder<int?>(
+                        valueListenable: widget.current,
+                        builder: (context, cur, _) {
+                          final on = dragging?.year ?? (cur == null ? null : (cur - 1) ~/ 12);
+                          return Column(children: [
+                            for (final y in years)
+                              Expanded(
+                                child: Semantics(
+                                  button: true,
+                                  selected: y == on,
+                                  label: '$y년',
+                                  onTap: () => widget.onJump(firstOf(y)),
+                                  child: ExcludeSemantics(
+                                    child: Center(
+                                      child: FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Container(
+                                          key: ValueKey('bar-year-$y'),
+                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                          decoration: y == on ? BoxDecoration(color: pill, borderRadius: BorderRadius.circular(99)) : null,
+                                          child: Text("'${(y % 100).toString().padLeft(2, '0')}",
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: y == on ? FontWeight.w700 : FontWeight.w600,
+                                                color: y == on ? Colors.white : Theme.of(context).colorScheme.onSurfaceVariant,
+                                              )),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ]);
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (dragging != null)
+              Positioned(
+                right: _YearBar.width + 8,
+                top: (top + dragY - scale.scale(15) / 2 - 10).clamp(top, top + h - 20),
+                child: IgnorePointer(
+                  child: Container(
+                    key: const ValueKey('year-bubble'),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(color: bubbleColor, borderRadius: BorderRadius.circular(12)),
+                    child: Text(dragging!.label, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ),
+          ]);
+        });
+      },
     );
   }
 }

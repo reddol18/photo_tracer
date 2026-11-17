@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ 시스템 시작 화면 아이콘(#21). 배경 없는 아이콘은 288dp 칸에 그려지고 지름 192dp 원으로 잘린다.
+     사방 84dp를 비워 120dp(=288-2×84) 아이콘이 가운데 오게 한다. 둥근 사각형(반경 28dp)의 가장 먼 점은
+     중심에서 √2×32+28 ≈ 73dp라 96dp 원 안에 있어 잘리지 않는다. Flutter 시작 화면의 아이콘과 크기·자리가 같다 -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/splash_icon"
+    android:inset="84dp" />

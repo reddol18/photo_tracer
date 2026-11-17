@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 시작 화면(#21) 어둡게 -->
+    <color name="splash_top">#FF2A2119</color>
+    <color name="splash_center">#FF1C1916</color> <!-- 45% 지점 -->
+    <color name="splash_bottom">#FF141518</color>
+    <!-- 화면 세로 가운데(50%) 색: (1C,19,16)→(14,15,18)의 1/11 지점 = (1B.4,18.A,16.2) → #1B1916 -->
+    <color name="splash_mid">#FF1B1916</color>
+</resources>

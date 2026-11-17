@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 시작 화면(#21) 밝게: 위→아래 그라데이션. lib/ui/launch.dart의 LaunchColors와 같은 값 -->
+    <color name="splash_top">#FFFFE2BC</color>
+    <color name="splash_center">#FFFFF0DC</color> <!-- 45% 지점 -->
+    <color name="splash_bottom">#FFFFF8EE</color>
+    <!-- 그라데이션의 화면 세로 가운데(50%) 색: 45%→100% 구간의 1/11 지점. Android 12+ 시스템 시작 화면 단색, NormalTheme 배경 -->
+    <color name="splash_mid">#FFFFF1DE</color>
+</resources>

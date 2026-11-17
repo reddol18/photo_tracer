@@ -209,6 +209,8 @@ class MainActivity : FlutterActivity() {
                 "exportQueryVectors" -> bg { Search(this).exportQueryVectors() }
                 // 개발용 확인 통로 — 출시 전 정리 대상: adb로 받은 검색어를 한 번 넘기고 비운다(릴리스는 늘 null)
                 "debugQuery" -> { val q = debugQuery; debugQuery = null; result.success(q) }
+                // 시작 화면(#21): 12(31) 미만은 시스템 시작 화면이 이미 그라데이션이라 Flutter가 처음부터 다 보이게 그린다
+                "sdkInt" -> result.success(Build.VERSION.SDK_INT)
                 // 화면 설정(대표 색·화면 모드·처음 안내 봄·최근 검색어): 문자열 하나씩
                 "pref" -> bg { getSharedPreferences("ui", MODE_PRIVATE).getString(call.argument<String>("key"), null) }
                 "setPref" -> bg {
@@ -221,6 +223,8 @@ class MainActivity : FlutterActivity() {
                     Moments(this).list(call.argument<Number>("offset")?.toInt() ?: 0, call.argument<Number>("limit")?.toInt() ?: 40,
                         call.argument<Number>("person")?.toLong(), span(call))
                 }
+                // 빠른 이동 막대(#19): 같은 거르기에서 연·월별 목록 위치
+                "monthIndex" -> bg { Moments(this).monthIndex(call.argument<Number>("person")?.toLong(), span(call)) }
                 "momentPhotos" -> bg {
                     Moments(this).photos(call.argument<Number>("id")!!.toLong(), call.argument<Number>("person")?.toLong(), span = span(call))
                 }
