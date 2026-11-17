@@ -1,0 +1,344 @@
+# 검색 한영 사전(#23): 시설물·가구·탈것·사물·옷·음식·동작 낱말 → 같은 뜻 영어.
+# 열: 종류 <탭> 한국어 꼴(| 로 여럿) <탭> 영어. 캐릭터·장소·풍경·고유한 말은 넣지 않는다(한국어가 낫다, #20).
+# 명사는 조사·'하는' 따위가 붙어도 앱이 떼어 찾는다(SceneWords.kt). 동사는 활용형을 꼴로 적는다.
+# 평가 검색어(query_kind_eval.py)를 보고 고른 목록이 아니다 — 일반 낱말로 만들었다.
+# 앱 assets(search/dict.txt·dict.bin)는 poc/app_assets.py build(또는 dict)로 만든다.
+시설	놀이터	playground
+시설	미끄럼틀	slide at a playground
+시설	그네	swing
+시설	시소	seesaw
+시설	정글짐	jungle gym
+시설	놀이기구	amusement ride
+시설	회전목마	carousel
+시설	관람차	ferris wheel
+시설	롤러코스터	roller coaster
+시설	범퍼카	bumper cars
+시설	분수|분수대	fountain
+시설	벤치	bench
+시설	계단	stairs
+시설	에스컬레이터	escalator
+시설	엘리베이터	elevator
+시설	난간	railing
+시설	울타리	fence
+시설	담장|담벼락	wall
+시설	대문	gate
+시설	현관	entrance door
+시설	문	door
+시설	창문|창가	window
+시설	베란다|발코니	balcony
+시설	지붕	roof
+시설	기둥	pillar
+시설	터널	tunnel
+시설	신호등	traffic light
+시설	횡단보도	crosswalk
+시설	가로등	street lamp
+시설	표지판	sign board
+시설	간판	signboard
+시설	화단	flower bed
+시설	화분	flower pot
+시설	텐트	tent
+시설	천막	canopy tent
+시설	수영장	swimming pool
+시설	트램펄린|방방	trampoline
+시설	볼풀	ball pit
+시설	매표소	ticket booth
+시설	자판기	vending machine
+시설	진열대	store shelves
+시설	계산대	checkout counter
+시설	무대	stage
+시설	조형물	sculpture
+시설	동상	statue
+시설	시계탑	clock tower
+시설	우체통	mailbox
+시설	쓰레기통	trash can
+시설	정자	pavilion
+시설	등대	lighthouse
+시설	기찻길|철로	railroad tracks
+시설	승강장	train platform
+시설	파라솔	beach umbrella
+시설	그늘막	sunshade
+시설	해먹	hammock
+시설	놀이집	playhouse
+시설	썰매장	sled slope
+시설	스케이트장	ice rink
+시설	어항|수족관	aquarium tank
+시설	칠판	blackboard
+시설	사물함	lockers
+가구	침대	bed
+가구	아기침대	crib
+가구	소파	sofa
+가구	의자	chair
+가구	식탁	dining table
+가구	책상	desk
+가구	탁자|테이블	table
+가구	서랍장	chest of drawers
+가구	옷장	wardrobe
+가구	책장	bookshelf
+가구	선반	shelf
+가구	거울	mirror
+가구	커튼	curtains
+가구	블라인드	window blinds
+가구	카펫|러그	rug
+가구	매트	mat
+가구	이불	blanket
+가구	베개	pillow
+가구	쿠션	cushion
+가구	담요	blanket
+가구	조명|전등	lamp
+가구	스탠드	desk lamp
+가구	냉장고	refrigerator
+가구	세탁기	washing machine
+가구	에어컨	air conditioner
+가구	선풍기	electric fan
+가구	텔레비전|티비|TV	television
+가구	컴퓨터	computer
+가구	노트북	laptop
+가구	피아노	piano
+가구	욕조	bathtub
+가구	세면대	sink
+가구	변기	toilet
+가구	싱크대	kitchen sink
+가구	가스레인지	stove
+가구	전자레인지	microwave
+가구	오븐	oven
+가구	청소기	vacuum cleaner
+가구	시계	clock
+가구	액자	picture frame
+가구	하이체어|아기의자	high chair
+가구	보행기	baby walker
+가구	크리스마스트리	Christmas tree
+가구	트리	Christmas tree
+가구	벽난로	fireplace
+탈것	자동차|차	car
+탈것	버스	bus
+탈것	기차|열차	train
+탈것	지하철|전철	subway train
+탈것	택시	taxi
+탈것	트럭	truck
+탈것	비행기	airplane
+탈것	헬리콥터	helicopter
+탈것	보트	boat
+탈것	요트	yacht
+탈것	유람선	cruise ship
+탈것	자전거	bicycle
+탈것	세발자전거	tricycle
+탈것	킥보드|퀵보드	kick scooter
+탈것	오토바이	motorcycle
+탈것	스쿠터	scooter
+탈것	유모차	stroller
+탈것	카시트	car seat
+탈것	카트	shopping cart
+탈것	붕붕카|자동차장난감	ride-on toy car
+탈것	전동차	electric ride-on car
+탈것	썰매	sled
+탈것	스케이트보드	skateboard
+탈것	인라인|롤러스케이트	roller skates
+탈것	소방차	fire truck
+탈것	경찰차	police car
+탈것	구급차	ambulance
+탈것	포크레인|굴착기	excavator
+탈것	트랙터	tractor
+탈것	케이블카	cable car
+탈것	레일바이크	rail bike
+사물	공	ball
+사물	축구공	soccer ball
+사물	풍선	balloon
+사물	장난감	toys
+사물	인형	doll
+사물	곰인형	teddy bear
+사물	블록	toy blocks
+사물	레고	lego bricks
+사물	퍼즐	jigsaw puzzle
+사물	로봇	robot toy
+사물	공룡	dinosaur toy
+사물	책	book
+사물	그림책|동화책	picture book
+사물	크레파스|크레용	crayons
+사물	색연필	colored pencils
+사물	연필	pencil
+사물	물감	paints
+사물	스케치북	sketchbook
+사물	종이	paper
+사물	가위	scissors
+사물	가방	bag
+사물	배낭|책가방	backpack
+사물	모자	hat
+사물	안경	glasses
+사물	선글라스	sunglasses
+사물	우산	umbrella
+사물	장갑	gloves
+사물	목도리	scarf
+사물	신발	shoes
+사물	장화	rain boots
+사물	양말	socks
+사물	휴대폰|핸드폰|스마트폰	smartphone
+사물	카메라	camera
+사물	꽃다발	bouquet
+사물	선물	gift box
+사물	상자|박스	cardboard box
+사물	리본	ribbon
+사물	트로피	trophy
+사물	메달	medal
+사물	깃발	flag
+사물	비눗방울	soap bubbles
+사물	모래	sand
+사물	삽	shovel
+사물	양동이	bucket
+사물	튜브	swim ring
+사물	구명조끼	life jacket
+사물	물총	water gun
+사물	수건	towel
+사물	칫솔	toothbrush
+사물	기저귀	diaper
+사물	쪽쪽이|공갈젖꼭지	pacifier
+사물	젖병	baby bottle
+사물	눈사람	snowman
+사물	랜턴	lantern
+사물	바구니	basket
+사물	장바구니	shopping basket
+사물	쇼핑백	shopping bag
+사물	지갑	wallet
+사물	열쇠	key
+사물	리모컨	remote control
+사물	마이크	microphone
+사물	실로폰	xylophone
+사물	탬버린	tambourine
+사물	악기	musical instrument
+사물	줄넘기	jump rope
+사물	훌라후프	hula hoop
+사물	라켓	racket
+사물	스키	skis
+사물	낚싯대	fishing rod
+사물	돗자리	picnic mat
+사물	촛불	candles
+사물	폭죽	fireworks
+사물	불꽃놀이	fireworks
+사물	종이비행기	paper airplane
+사물	색종이	colored paper
+사물	스티커	stickers
+사물	점토|클레이|찰흙	play dough
+사물	모빌	baby mobile
+사물	딸랑이	baby rattle
+사물	가면	mask
+사물	마스크	face mask
+사물	손수건	handkerchief
+사물	컵	cup
+사물	그릇	bowl
+사물	접시	plate
+사물	숟가락	spoon
+사물	젓가락	chopsticks
+사물	포크	fork
+사물	빨대	straw
+사물	도시락	lunch box
+사물	물병|텀블러	water bottle
+옷	옷	clothes
+옷	드레스	dress
+옷	원피스	one-piece dress
+옷	치마	skirt
+옷	바지	pants
+옷	티셔츠	t-shirt
+옷	잠옷	pajamas
+옷	수영복	swimsuit
+옷	한복	hanbok
+옷	패딩	puffer jacket
+옷	코트	coat
+옷	우비	raincoat
+옷	턱받이	bib
+옷	머리띠	headband
+옷	유니폼	uniform
+음식	케이크	cake
+음식	생일케이크	birthday cake
+음식	빵	bread
+음식	과자	snacks
+음식	아이스크림	ice cream
+음식	사탕	candy
+음식	초콜릿	chocolate
+음식	수박	watermelon
+음식	딸기	strawberries
+음식	바나나	banana
+음식	귤	tangerine
+음식	포도	grapes
+음식	우유	milk
+음식	밥	rice meal
+음식	국수	noodles
+음식	라면	ramen
+음식	피자	pizza
+음식	햄버거	hamburger
+음식	김밥	gimbap
+음식	떡	rice cake
+음식	커피	coffee
+음식	주스	juice
+음식	이유식	baby food
+음식	분유	baby formula
+음식	고기	meat
+음식	과일	fruit
+음식	음식	food
+동작	먹는|먹고|먹은|먹기|먹다|먹으며|먹으면서|먹어|먹는다	eating
+동작	마시는|마시고|마신|마시기|마셔	drinking
+동작	자는|자고|잠든|잠자는|잠자기|낮잠|잠	sleeping
+동작	눕는|누운|누워|누워서|눕고	lying down
+동작	앉은|앉아|앉아서|앉는|앉고	sitting
+동작	서서|서있는	standing
+동작	타는|타고|탄|타기	riding
+동작	뛰는|뛰고|뛰어|뛰기|뛰노는|뛰어노는|뛰놀고|뛰어다니는	running around
+동작	달리는|달리고|달리기	running
+동작	걷는|걷고|걸어|걷기|걸어가는|걸음마	walking
+동작	산책	taking a walk
+동작	노는|놀고|놀기|놀이|놀아	playing
+동작	들고|든|드는	holding something
+동작	안고|안은|안긴|안겨|안아	hugging
+동작	손잡고|손잡은	holding hands
+동작	그리는|그린|그리기	drawing
+동작	그림	drawing a picture
+동작	구경	looking around
+동작	보는	watching
+동작	읽는|읽고|읽은|읽기	reading
+동작	웃는|웃고|웃은|웃음	smiling
+동작	우는|울고|울음	crying
+동작	춤|춤추는|춤추고	dancing
+동작	노래	singing
+동작	수영	swimming
+동작	물놀이	playing in water
+동작	요리	cooking
+동작	목욕	taking a bath
+동작	샤워	taking a shower
+동작	양치	brushing teeth
+동작	세수	washing face
+동작	청소	cleaning
+동작	설거지	washing dishes
+동작	빨래	doing laundry
+동작	공부	studying
+동작	운동	exercising
+동작	낚시	fishing
+동작	캠핑	camping
+동작	등산	hiking
+동작	소풍	picnic
+동작	쇼핑|장보기	shopping
+동작	박수	clapping
+동작	기는|기어|기어가는|기어다니는	crawling
+동작	던지는|던지고|던지기	throwing
+동작	공차기	kicking a ball
+동작	부는|불고	blowing
+동작	만드는|만들고|만들기|만든	making something
+동작	씻는|씻고|씻기	washing
+동작	입은|입고|입는	wearing
+동작	업은|업고|업혀	piggyback ride
+동작	미는|밀고	pushing
+동작	끄는|끌고	pulling
+동작	오르는|올라가는|올라간|올라	climbing
+동작	매달린|매달려	hanging
+동작	점프|뛰어오르는	jumping
+동작	숨바꼭질	hide and seek
+동작	뽀뽀	kissing
+동작	건배	toasting
+동작	포옹	hugging
+동작	잡기놀이	playing tag
+동작	모래놀이	playing with sand
+동작	블록놀이	playing with blocks
+동작	비눗방울놀이	blowing soap bubbles
+동작	눈싸움	snowball fight
+동작	썰매타기	sledding
+동작	자전거타기	riding a bicycle
+동작	기다리는|기다리고	waiting
+동작	관람	viewing an exhibition
+동작	연날리기	flying a kite

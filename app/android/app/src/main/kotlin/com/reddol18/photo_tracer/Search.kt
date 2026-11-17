@@ -19,6 +19,8 @@ import java.time.LocalDate
  * 흔한 검색어 방향 빼기: 앨범 대부분이 아이 사진이라 "바다에서 노는 아이"는 '바다'보다 '아이'에 끌린다.
  *   일상 문구 30개 평균(assets/search/common.bin, poc/app_assets.py common)을 검색어 벡터에서 빼고 순위를 매긴다.
  *   0단계 정답(search_rank_eval.py): '아이와 ○○' 상위10 정밀도 28→42%, 한두 낱말 검색어는 그대로(37~38%).
+ *   다만 사람 낱말(아이·아기·사람·모습…)이 든 검색어에만 뺀다 — 장소·사물만이면 오히려 깎였다(#24, SceneWords).
+ * 한영 사전(#23): 시설물·사물·동작 낱말이 든 검색어는 미리 계산한 영어 뜻 벡터를 섞는다(SceneWords, assets/search/dict.*).
  * conf: SigLIP 확률 sigmoid(scale·cos + bias). 긴 설명 문장은 1위가 0.8쯤이지만 짧은 검색어는 0.3쯤이라 화면에는 숫자로 안 보인다.
  * 텍스트 모델(약 200MB)은 처음 검색할 때 열어 앱이 살아 있는 동안 둔다.
  */
@@ -36,6 +38,7 @@ class Search(private val ctx: Context) {
         private var bank: Bank? = null
         private var bankKey = ""
         private var common: FloatArray? = null
+        private var lexicon: SceneWords.Lexicon? = null
         // 인물 낱말 뒤에 붙는 조사(긴 것부터 떼어 본다)와, 인물 검색에서 장면 검색어로 넘기지 않을 낱말
         private val JOSA = listOf("이랑", "이하고", "이와", "이가", "이는", "이를", "이의", "이도", "이만", "에게", "한테", "하고",
             "랑", "와", "과", "의", "은", "는", "이", "가", "을", "를", "도", "만").sortedByDescending { it.length }
@@ -46,6 +49,20 @@ class Search(private val ctx: Context) {
         val b = ByteBuffer.wrap(s.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
         FloatArray(b.remaining() / 4) { b.getFloat() }
     }.also { common = it }
+
+    /** 한영 사전(#23). assets가 없으면(예전 빌드) 빈 사전 — 섞지 않는다 */
+    private fun lexicon(): SceneWords.Lexicon = lexicon ?: try {
+        val lines = ctx.assets.open("search/dict.txt").bufferedReader(Charsets.UTF_8).use { it.readLines() }
+        val b = ctx.assets.open("search/dict.bin").use { ByteBuffer.wrap(it.readBytes()).order(ByteOrder.LITTLE_ENDIAN) }
+        SceneWords.Lexicon.parse(lines, FloatArray(b.remaining() / 4) { b.getFloat() })
+    } catch (e: java.io.IOException) { SceneWords.Lexicon.EMPTY }.also { lexicon = it }
+
+    /** 장면 검색어 벡터: 사전 낱말이 있으면 영어 뜻을 섞고(#23), 흔한 방향은 사람 낱말이 있을 때만 뺀다(#24, score의 sub) */
+    private fun sceneQuery(text: String, q: FloatArray): Pair<FloatArray, Boolean> =
+        if (legacy) q to true else lexicon().mix(text, q) to SceneWords.hasPerson(text)
+
+    /** 개발용(debugAB): true면 바꾸기 전 동작 — 사전 섞기 없음, 흔한 방향 빼기는 늘. 평소에는 false(지금 동작) */
+    private var legacy = false
 
     /** segs[i]: 사진 i의 구간(구간 밖이면 null), fake[i]: 실사 아닌 이미지(화면 캡처·AI 그림 등, Fake.kt) */
     private class Bank(val photos: List<Long>, val segs: List<Long?>, val vecs: List<FloatArray>, val fake: List<Boolean>,
@@ -94,11 +111,12 @@ class Search(private val ctx: Context) {
             return mapOf("items" to items, "query_ms" to 0.0, "total_ms" to (System.nanoTime() - t0) / 1e6,
                          "candidates" to items.size, "rest" to "", "recent" to true) + extra
         }
-        val q = templated(if (hit == null) query else scene.joinToString(" "))
+        val sceneText = if (hit == null) query else scene.joinToString(" ")
+        val (q, sub) = sceneQuery(sceneText, templated(sceneText))
         val tq = (System.nanoTime() - t0) / 1e6
         val b = bank()
         val keep = period?.let { inPeriod(it) }
-        val items = rank(b, q, keep).map { c ->
+        val items = rank(b, q, keep, sub).map { c ->
             if (c.seg != null) segmentItem(c.seg, b.photos[c.cover], b.raw(c.cover, q)) else photoItem(b.photos[c.cover], b.raw(c.cover, q))
         }
         return mapOf("items" to items, "query_ms" to tq, "total_ms" to (System.nanoTime() - t0) / 1e6,
@@ -194,8 +212,8 @@ class Search(private val ctx: Context) {
      *   구간을 위 두 장 평균으로 겨루는 것도 시험했는데, 상위 칸 대부분이 구간 밖 낱장이라 구간만 깎여 날짜 없는 AI 그림이 오히려 올라왔다.
      *   또렷함·색 다양함이 낮은 사진 뒤로 보내기도 시험했는데, 걸리는 것이 검색어마다 0~1장이고 눈 발자국 같은 진짜 사진도 걸려 넣지 않았다.
      */
-    private fun rank(b: Bank, q: FloatArray, keep: Pair<Set<Long>, Set<Long>>? = null): List<Cand> {
-        val (_, scores) = score(b, q)
+    private fun rank(b: Bank, q: FloatArray, keep: Pair<Set<Long>, Set<Long>>? = null, sub: Boolean = true): List<Cand> {
+        val (_, scores) = score(b, q, sub)
         val back = { i: Int -> b.fake[i] || (b.person[i] ?: Float.NEGATIVE_INFINITY) > SOFT_PERSON }
         val cands = ArrayList<Cand>()
         val bySeg = HashMap<Long, MutableList<Int>>()
@@ -213,11 +231,9 @@ class Search(private val ctx: Context) {
         return cands.sortedWith(compareBy<Cand> { it.fake }.thenByDescending { it.score }).take(TOP)
     }
 
-    /** 사진 벡터마다 (코사인, 흔한 방향을 뺀 순위용 점수) */
-    private fun score(b: Bank, q: FloatArray): Pair<List<Float>, List<Float>> {
-        val c = common()
-        var qc = 0f; for (d in q.indices) qc += q[d] * c[d]
-        val qd = FloatArray(q.size) { q[it] - qc * c[it] }
+    /** 사진 벡터마다 (코사인, 순위용 점수). sub: 흔한 방향을 빼고 순위를 매길지(사람 낱말 검색어만, #24) */
+    private fun score(b: Bank, q: FloatArray, sub: Boolean = true): Pair<List<Float>, List<Float>> {
+        val qd = if (sub) SceneWords.deCommon(q, common()) else q
         val raw = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * q[d]; s }
         val scores = b.vecs.map { v -> var s = 0f; for (d in v.indices) s += v[d] * qd[d]; s } // 순위용(크기 무관)
         return raw to scores
@@ -366,10 +382,12 @@ class Search(private val ctx: Context) {
         val segScore = HashMap<Long, Float>(); val photoScore = HashMap<Long, Float>() // 순위용
         val segRaw = HashMap<Long, Float>(); val photoRaw = HashMap<Long, Float>()
         if (rest.isNotEmpty()) {
-            val q = vector(rest)
+            // 남은 장면 검색어에도 사전(#23, legacy면 안 섞음). 빼기(#24)는 그대로 늘 한다 — 원래 검색어에 인물 낱말이 있었으니 사람 낱말 검색어다
+            val q = sceneQuery(rest, vector(rest)).first
+            val sub = true
             tq = (System.nanoTime() - t0) / 1e6
             val b = bank()
-            val (raw, scores) = score(b, q)
+            val (raw, scores) = score(b, q, sub)
             for (i in scores.indices) {
                 photoScore[b.photos[i]] = scores[i]; photoRaw[b.photos[i]] = raw[i]
                 val seg = b.segs[i] ?: continue
@@ -508,6 +526,30 @@ class Search(private val ctx: Context) {
             }
         }
         File(dir, "search_eval.csv").apply { writeText(out.toString()); setReadable(true, false) }
+        list.delete()
+    }
+
+    /**
+     * 개발용(#23·#24 전후 비교): 앱 폴더에 search_ab.txt(줄마다 검색어를 UTF-8 16진수로)를 넣으면 검색어마다 실제 search를
+     * 두 번 돌려 search_ab.csv로 쓰고 txt를 지운다. old = 바꾸기 전(사전 섞기 없음, 빼기는 늘), new = 지금 동작.
+     *   열: 검색어 번호, 방식, 순위(0부터), 칸 종류(segment|photo), 칸 id, 표지 사진 id — 결과 items 상위 TOP칸 그대로.
+     *   picks 없음, 오늘 기준. 사진 번호만 나간다. 정리 화면을 열 때(scan) 확인한다.
+     */
+    fun debugAB() {
+        val dir = ctx.getExternalFilesDir(null) ?: return
+        val list = File(dir, "search_ab.txt").takeIf { it.exists() } ?: return
+        val queries = list.readLines().filter { it.isNotBlank() }
+            .map { h -> String(ByteArray(h.trim().length / 2) { h.trim().substring(2 * it, 2 * it + 2).toInt(16).toByte() }, Charsets.UTF_8) }
+        val out = StringBuilder("query,mode,rank,kind,id,cover\n")
+        try {
+            for ((k, query) in queries.withIndex()) for ((mode, old) in listOf("old" to true, "new" to false)) {
+                legacy = old
+                @Suppress("UNCHECKED_CAST")
+                val items = search(query)["items"] as? List<Map<String, Any?>> ?: emptyList()
+                for ((r, it) in items.take(TOP).withIndex()) out.append("$k,$mode,$r,${it["kind"]},${it["id"]},${it["cover"]}\n")
+            }
+        } finally { legacy = false }
+        File(dir, "search_ab.csv").apply { writeText(out.toString()); setReadable(true, false) }
         list.delete()
     }
 

@@ -12,6 +12,8 @@
     - 흔한 검색어 방향: assets/search/common.bin (아래 common)
   uv run app_assets.py common
     - 흔한 검색어 방향만 다시 만든다.
+  uv run app_assets.py dict
+    - 한영 사전(search_dict.tsv)만 다시 만든다 → assets/search/dict.txt·dict.bin (#23).
   uv run app_assets.py fake
     - 실사 아닌 이미지(화면 캡처·AI 그림·연예인 사진) 판정 문구 벡터만 다시 만든다.
   uv run app_assets.py compare <query_vectors_*.json>
@@ -128,6 +130,21 @@ def write_common() -> None:
     print(f"흔한 검색어 방향 ({len(GENERIC)}개 평균) → {out}")
 
 
+def write_dict() -> None:
+    """한영 사전(#23, search_dict.tsv) → assets/search/dict.txt(줄마다 한국어 꼴들을 '|'로, UTF-8)·
+    dict.bin(같은 순서로 영어 뜻 벡터 768 float32 LE, 정규화). 앱(SceneWords.kt)은 검색어에 사전 낱말이 있을 때만
+    이 벡터를 섞는다 — 검색할 때 텍스트 모델을 더 돌리지 않는다. 섞는 비율은 query_kind_eval.py --dict 로 골랐다."""
+    from search_dict import Lexicon
+    from short_query_eval import text_vectors
+    lex = Lexicon()
+    V = text_vectors([en for _, _, en in lex.rows]).astype("<f4")
+    out = ASSETS / "search"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dict.txt").write_text("".join("|".join(kos) + "\n" for _, kos, _ in lex.rows), encoding="utf-8", newline="\n")
+    (out / "dict.bin").write_bytes(V.tobytes())
+    print(f"한영 사전 {len(lex.rows)}낱말(꼴 {len(lex.index)}개) → {out / 'dict.txt'}, dict.bin")
+
+
 def write_fake() -> None:
     """실사 아닌 이미지 판정 문구 벡터 → assets/search/fake.bin (float32 LE, 768씩: 실사 6 · 캡처 3 · 인물 2 순서).
     앱(Fake.kt)은 사진 벡터와 (캡처 문구 최대 - 실사 문구 최대), (인물 문구 최대 - 실사 문구 최대)를 본다.
@@ -168,8 +185,11 @@ if __name__ == "__main__":
         build()
         write_common()
         write_fake()
+        write_dict()
     elif sys.argv[1:2] == ["common"]:
         write_common()
+    elif sys.argv[1:2] == ["dict"]:
+        write_dict()
     elif sys.argv[1:2] == ["fake"]:
         write_fake()
     elif sys.argv[1:2] == ["compare"]:

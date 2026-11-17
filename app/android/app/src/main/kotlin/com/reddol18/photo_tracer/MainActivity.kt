@@ -115,6 +115,7 @@ class MainActivity : FlutterActivity() {
                 "scan" -> {
                     if (photosGranted()) { if (IndexWorker.nightOn(this)) IndexWorker.scheduleNight(this); IndexWorker.scanNow(this) }
                     worker.execute { try { Search(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "search_eval 실패: $e") } }
+                    worker.execute { try { Search(this).debugAB() } catch (e: Exception) { Log.w("PhotoTracer", "search_ab 실패: $e") } }
                     worker.execute { try { Search(this).debugPeople() } catch (e: Exception) { Log.w("PhotoTracer", "people_eval 실패: $e") } }
                     clusterer.execute { try { People(this).debugEval() } catch (e: Exception) { Log.w("PhotoTracer", "cluster_eval 실패: $e") } }
                     clusterer.execute { try { Who(this).debugSmall() } catch (e: Exception) { Log.w("PhotoTracer", "small_eval 실패: $e") } }
