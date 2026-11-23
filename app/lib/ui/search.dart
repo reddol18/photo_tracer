@@ -560,8 +560,9 @@ class _SearchPageState extends State<SearchPage> {
               onTap: () {
                 if (segment) {
                   final ids = it['ids']; // 인물 검색: 구간 안의 그 인물 사진만
+                  // 결과를 띄운 사이 스캔이 구간 번호를 다시 매겨도 맞는 순간이 열리게 표지 사진·시작 시각으로 찾는다(#32)
                   Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => PhotosPage(title: label, load: () async => ids ?? await channel.invokeMethod('segmentPhotos', {'id': it['id']}))));
+                      builder: (_) => PhotosPage(title: label, load: () async => ids ?? await channel.invokeMethod('segmentPhotos', momentKey(it['id'], it['cover'], it['date'], null)))));
                 } else {
                   showPhoto(context, it['cover'] as int);
                 }

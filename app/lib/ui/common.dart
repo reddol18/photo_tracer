@@ -141,6 +141,7 @@ class Status extends ChangeNotifier {
       if (scan) await channel.invokeMethod('scan');
       s = Map<String, dynamic>.from(await channel.invokeMethod('status'));
       _checkPeopleGen();
+      _checkSegmentsGen();
       if (scan || _tick++ % 20 == 0) {
         runs = ((await channel.invokeMethod('runs')) as List).map((e) => Map<String, dynamic>.from(e)).toList();
       }
@@ -160,6 +161,16 @@ class Status extends ChangeNotifier {
     if (g == null) return;
     if (_peopleGen != null && g != _peopleGen) peopleVersion.value++;
     _peopleGen = g;
+  }
+
+  int? _segmentsGen; // 처음 읽은 값은 기준으로만 둔다
+
+  /// 스캔이 구간(순간의 번호·장 수·표지)을 바꾸면(#31) Kotlin이 segments_gen을 올린다. 바뀐 것을 보면 segmentsVersion을 올린다
+  void _checkSegmentsGen() {
+    final g = (s?['segments_gen'] as num?)?.toInt();
+    if (g == null) return;
+    if (_segmentsGen != null && g != _segmentsGen) segmentsVersion.value++;
+    _segmentsGen = g;
   }
 
   int _n(String k) => (s?[k] as num?)?.toInt() ?? 0;
@@ -262,6 +273,14 @@ Future<List<Map<String, dynamic>>> loadPeople() async =>
 /// 인물 목록 판 번호(#27). 인물을 등록·고치기·합치기·지우기·맞다/아니다 하면 올린다.
 /// 탭은 IndexedStack이라 한 번 만든 화면(인물 탭·홈·검색)이 그대로 남아, 알리지 않으면 다른 곳에서 바꾼 것을 모른다
 final peopleVersion = ValueNotifier<int>(0);
+
+/// 순간(구간)을 여는 채널 인자(#32): 번호 id는 스캔마다 다시 매겨지므로, Kotlin(Moments.resolve)이
+/// 표지 사진 photo가 든 구간 → start~end와 겹치는 구간 → id 순으로 지금 구간을 찾는다
+Map<String, Object?> momentKey(Object? id, Object? photo, Object? start, Object? end) =>
+    {'id': id, 'photo': photo, 'start': start, 'end': end};
+
+/// 구간 판 번호(#31): 스캔이 순간(구간)을 다시 만들어 바뀌면 Status가 올린다. 홈 순간·순간 사진 목록이 다시 읽는다
+final segmentsVersion = ValueNotifier<int>(0);
 
 /// 인물을 바꾸는 채널 호출(who*). 끝나면 성공·실패와 상관없이 peopleVersion을 올린다(실패해도 일부는 바뀌었을 수 있다)
 Future<T?> changePeople<T>(String method, Map<String, Object?> args) async {
@@ -447,6 +466,7 @@ class _PhotosPageState extends State<PhotosPage> {
   final faces = <int, int>{}; // 사진 → 귀퉁이에 보일 얼굴
   int seq = 0; // 늦게 온 옛 목록이 덮지 않게
   int loadedVersion = -1; // 마지막으로 읽기 시작할 때의 peopleVersion
+  int loadedSegments = -1; // 마지막으로 읽기 시작할 때의 segmentsVersion
   late final settle = Debounced(_load);
 
   @override
@@ -454,12 +474,15 @@ class _PhotosPageState extends State<PhotosPage> {
     super.initState();
     // 뷰어에서 '아니에요'·이름 붙이기를 하면 이 목록(순간·인물 거르기)도 바뀐다(#29 B)
     peopleVersion.addListener(settle.call);
+    // 보는 사이 스캔이 구간을 바꾸면 순간의 사진도 바뀐다(#31). load는 순간을 표지 사진으로 찾으니 다시 읽어도 같은 순간(#32)
+    segmentsVersion.addListener(settle.call);
     _load();
   }
 
   @override
   void dispose() {
     peopleVersion.removeListener(settle.call);
+    segmentsVersion.removeListener(settle.call);
     settle.cancel();
     super.dispose();
   }
@@ -467,6 +490,7 @@ class _PhotosPageState extends State<PhotosPage> {
   Future<void> _load() async {
     final s = ++seq;
     loadedVersion = peopleVersion.value;
+    loadedSegments = segmentsVersion.value;
     try {
       final r = await widget.load();
       if (!mounted || s != seq) return;
@@ -490,10 +514,10 @@ class _PhotosPageState extends State<PhotosPage> {
     }
   }
 
-  /// 뷰어에서 돌아왔을 때 그사이 인물이 바뀌었는데 아직 안 읽었으면 바로 읽는다
+  /// 뷰어에서 돌아왔을 때 그사이 인물(또는 구간)이 바뀌었는데 아직 안 읽었으면 바로 읽는다
   Future<void> open(int i) async {
     await showPhoto(context, ids![i], ids: ids);
-    if (mounted && peopleVersion.value != loadedVersion) {
+    if (mounted && (peopleVersion.value != loadedVersion || segmentsVersion.value != loadedSegments)) {
       settle.cancel();
       _load();
     }

@@ -48,6 +48,47 @@ class Scanner(private val ctx: Context) {
         /** 구간당 대표 사진 수: 1장 → 1, 2~3 → 1, 4~7 → 2, 8~15 → 3 … 최대 5 */
         fun reps(n: Int): Int = if (n <= 1) 1 else minOf(5, 31 - Integer.numberOfLeadingZeros(n)) // ⌊log2 n⌋
 
+        /** 구간(찍은 순서의 사진 id)에서 대표 사진: 시간상 고르게 reps(n)장 */
+        fun chosen(ids: List<Long>): Set<Long> {
+            val k = reps(ids.size)
+            return (0 until k).map { j -> ids[((j + 0.5) * ids.size / k).toInt()] }.toSet()
+        }
+
+        /**
+         * 구간 모양의 지문(#31): 구간마다 번호(순서)·사진 id·찍은 시각·대표 여부를 차례로 섞은 64비트 값(FNV-1a).
+         * events는 구간마다 (사진 id, 찍은 시각)을 찍은 순서로. 다시 만들어도 지문이 같으면 화면이 볼 것(번호·장 수·표지·날짜)은 그대로다
+         */
+        fun signature(events: List<List<Pair<Long, Long>>>): Long {
+            var h = -0x340d631b7bdddcdbL // FNV offset basis
+            fun mix(v: Long) {
+                var x = v
+                for (b in 0 until 8) {
+                    h = (h xor (x and 0xff)) * 0x100000001b3L
+                    x = x ushr 8
+                }
+            }
+            mix(events.size.toLong())
+            events.forEachIndexed { i, e ->
+                val rep = chosen(e.map { it.first })
+                mix(i.toLong()); mix(e.size.toLong())
+                for ((id, t) in e) { mix(id); mix(t); mix(if (id in rep) 1 else 0) }
+            }
+            return h
+        }
+
+        private fun segPrefs(ctx: Context) = ctx.getSharedPreferences("segments", Context.MODE_PRIVATE)
+
+        /** 스캔이 구간을 바꾼 횟수(#31·#32). status에 실려 홈이 순간을 제자리에서 다시 읽는다 */
+        fun segmentsGen(ctx: Context): Int = segPrefs(ctx).getInt("gen", 0)
+
+        /** 새 구간의 지문이 지난번과 다를 때만 번호를 올린다. 바뀌었으면 true */
+        private fun segmentsChanged(ctx: Context, sig: Long): Boolean {
+            val p = segPrefs(ctx)
+            if (p.contains("sig") && p.getLong("sig", 0) == sig) return false
+            p.edit().putLong("sig", sig).putInt("gen", p.getInt("gen", 0) + 1).apply()
+            return true
+        }
+
         fun km(a: DoubleArray, b: DoubleArray): Double {
             val r = Math.PI / 180
             val h = sin((b[0] - a[0]) * r / 2).let { it * it } +
@@ -242,10 +283,9 @@ class Scanner(private val ctx: Context) {
             w.execSQL("UPDATE photos SET segment = NULL, is_rep = 0")
             w.delete("segments", null, null)
             events.forEachIndexed { i, e ->
-                val k = reps(e.size)
-                val chosen = (0 until k).map { j -> e[((j + 0.5) * e.size / k).toInt()].id }.toSet()
+                val picked = chosen(e.map { it.id })
                 for (s in e) {
-                    w.execSQL("UPDATE photos SET segment = ?, is_rep = ? WHERE id = ?", arrayOf<Any>(i, if (s.id in chosen) 1 else 0, s.id))
+                    w.execSQL("UPDATE photos SET segment = ?, is_rep = ? WHERE id = ?", arrayOf<Any>(i, if (s.id in picked) 1 else 0, s.id))
                 }
                 w.insert("segments", null, ContentValues().apply {
                     put("id", i); put("start", e.first().t); put("end", e.last().t); put("n", e.size)
@@ -253,6 +293,8 @@ class Scanner(private val ctx: Context) {
             }
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
-        Log.i("PhotoTracer", "구간 ${events.size}개 · 대표 사진 ${events.sumOf { reps(it.size) }}장 (구간 대상 ${shots.size}장)")
+        // 저장한 뒤에 번호를 올린다: 화면이 번호를 보고 읽을 때는 새 구간이 이미 들어가 있다(#31)
+        val moved = segmentsChanged(ctx, signature(events.map { e -> e.map { it.id to it.t } }))
+        Log.i("PhotoTracer", "구간 ${events.size}개 · 대표 사진 ${events.sumOf { reps(it.size) }}장 (구간 대상 ${shots.size}장)${if (moved) " · 바뀜" else ""}")
     }
 }

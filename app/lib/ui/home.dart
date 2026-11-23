@@ -40,7 +40,7 @@ class _HomePageState extends State<HomePage> {
   // 기간 거르기(#17): 인물과 함께 걸린다. 탭을 옮겨도 남고(IndexedStack이 상태를 둔다) 앱을 다시 켜면 풀린다
   PeriodPick? range;
   bool loading = false, loadingUp = false, end = false;
-  int lastSegments = -1, lastPeopleDone = -1;
+  int lastPeopleDone = -1;
 
   final scroll = ScrollController();
   final _stackKey = GlobalKey(), _headKey = GlobalKey(), _centerKey = GlobalKey();
@@ -51,13 +51,15 @@ class _HomePageState extends State<HomePage> {
   Timer? _calm;
 
   late final settle = Debounced(onPeople);
-  bool dirty = false; // 숨어 있는 동안 인물이 바뀌어 순간을 다시 읽어야 함
+  late final segSettle = Debounced(onSegments);
+  bool dirty = false; // 숨어 있는 동안 인물이나 구간이 바뀌어 순간을 다시 읽어야 함
 
   @override
   void initState() {
     super.initState();
     Status.i.addListener(onStatus);
     peopleVersion.addListener(settle.call);
+    segmentsVersion.addListener(segSettle.call);
     HomePage.visible.addListener(onVisible);
     reload();
   }
@@ -66,8 +68,10 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     Status.i.removeListener(onStatus);
     peopleVersion.removeListener(settle.call);
+    segmentsVersion.removeListener(segSettle.call);
     HomePage.visible.removeListener(onVisible);
     settle.cancel();
+    segSettle.cancel();
     _calm?.cancel();
     scroll.dispose();
     barTop.dispose();
@@ -76,11 +80,19 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  /// 갤러리를 다시 읽어 순간이 바뀌었거나 얼굴 확인이 크게 늘었으면 다시 불러온다
+  /// 얼굴 확인이 크게 늘었으면 다시 불러온다. 순간(구간)이 바뀐 것은 segmentsVersion(#31)이 따로 알린다 — 수가 같아도
   void onStatus() {
     final st = Status.i;
-    final seg = st.segments, faces = (st.s?['faces_done'] as num?)?.toInt() ?? 0;
-    if (lastSegments >= 0 && !st.scanning && (seg != lastSegments || faces - lastPeopleDone > 500)) reload();
+    final faces = (st.s?['faces_done'] as num?)?.toInt() ?? 0;
+    if (lastPeopleDone >= 0 && !st.scanning && faces - lastPeopleDone > 500) reload();
+  }
+
+  /// 스캔이 구간을 바꾸면(#31: 사진 추가·삭제로 장 수·표지·순간 수가 바뀜) 순간을 제자리에서 다시 읽는다.
+  /// 홈이 안 보이면 표시만 해 두고 보일 때 읽는다(인물과 같은 방식)
+  void onSegments() {
+    if (!mounted) return;
+    dirty = true;
+    if (HomePage.visible.value) refreshMoments();
   }
 
   int peopleSeq = 0; // onPeople 순번: 늦게 온 옛 목록이 덮지 않게
@@ -144,7 +156,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> reload() async {
     dirty = false;
-    lastSegments = Status.i.segments;
     lastPeopleDone = (Status.i.s?['faces_done'] as num?)?.toInt() ?? 0;
     try {
       final p = await loadPeople();
@@ -799,7 +810,8 @@ class MomentCard extends StatelessWidget {
             builder: (_) => PhotosPage(
               title: title,
               subtitle: '사진 ${fmtInt(n)}장${who.isEmpty ? '' : ' · ${who.join(', ')}'}',
-              load: () => channel.invokeMethod('momentPhotos', {'id': m['id'], 'person': person, ...?range?.args}),
+              // 번호(id)는 스캔마다 다시 매겨진다: 표지 사진·시작~끝으로 지금 구간을 찾게 함께 넘긴다(#32)
+              load: () => channel.invokeMethod('momentPhotos', {...momentKey(m['id'], covers.firstOrNull, m['start'], m['end']), 'person': person, ...?range?.args}),
             ),
           ),
         ),

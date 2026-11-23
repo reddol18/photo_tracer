@@ -115,6 +115,29 @@ class Moments(ctx: Context) {
         return out
     }
 
+    /**
+     * 화면이 들고 있던 순간을 지금 구간 번호로 찾는다(#32). 스캔은 구간을 다시 만들며 번호를 0부터 다시 매겨서,
+     * 옛 사진이 들어오거나 중간 구간이 사라지면 같은 번호가 다른 날의 순간이 된다.
+     *   1) photo(그 순간에서 보던 사진: 표지)가 아직 구간에 있으면 그 구간
+     *   2) 아니면(그 사진을 지움) start~end와 겹치는 구간 중 가장 이른 것
+     *   3) 둘 다 안 주면 id 그대로(예전 호출). 찾지 못하면 null(빈 목록)
+     */
+    fun resolve(id: Long?, photo: Long?, start: Long?, end: Long?): Long? {
+        val r = db.readableDatabase
+        if (photo != null) {
+            r.rawQuery("SELECT segment FROM photos WHERE id = ? AND segment IS NOT NULL", arrayOf(photo.toString())).use {
+                if (it.moveToFirst()) return it.getLong(0)
+            }
+        }
+        if (start != null) {
+            r.rawQuery("SELECT id FROM segments WHERE start <= ? AND \"end\" >= ? ORDER BY start LIMIT 1",
+                arrayOf((end ?: start).toString(), start.toString())).use {
+                return if (it.moveToFirst()) it.getLong(0) else null
+            }
+        }
+        return if (photo == null) id else null
+    }
+
     private fun taken(id: Long): Long =
         db.readableDatabase.rawQuery("SELECT COALESCE(taken_at, 0) FROM photos WHERE id = ?", arrayOf(id.toString()))
             .use { if (it.moveToFirst()) it.getLong(0) else 0L }

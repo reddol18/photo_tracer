@@ -138,8 +138,10 @@ class MainActivity : FlutterActivity() {
                 "searchHintSeen" -> bg { Search(this).hintSeen() }
                 "gender" -> bg { Search(this).gender() }
                 "setGender" -> bg { Search(this).setGender(call.argument<String>("g")) }
+                // 검색 결과의 순간(#32): 번호(id)는 스캔마다 다시 매겨지니 표지 사진(photo)·시작~끝(start·end)으로 지금 구간을 찾는다
                 "segmentPhotos" -> bg {
-                    ids(db, "SELECT id FROM photos WHERE segment = ? ORDER BY taken_at", call.argument<Number>("id").toString())
+                    val seg = segmentOf(call)
+                    if (seg == null) emptyList() else ids(db, "SELECT id FROM photos WHERE segment = ? ORDER BY taken_at", seg.toString())
                 }
                 "persons" -> bg {
                     val out = ArrayList<Map<String, Any>>()
@@ -228,7 +230,8 @@ class MainActivity : FlutterActivity() {
                 // 빠른 이동 막대(#19): 같은 거르기에서 연·월별 목록 위치
                 "monthIndex" -> bg { Moments(this).monthIndex(call.argument<Number>("person")?.toLong(), span(call)) }
                 "momentPhotos" -> bg {
-                    Moments(this).photos(call.argument<Number>("id")!!.toLong(), call.argument<Number>("person")?.toLong(), span = span(call))
+                    val seg = segmentOf(call) // 홈 카드도 번호만 믿지 않는다(#32)
+                    if (seg == null) emptyList() else Moments(this).photos(seg, call.argument<Number>("person")?.toLong(), span = span(call))
                 }
                 "reviewQueue" -> bg { Moments(this).review(call.argument<Number>("limit")?.toInt() ?: 100) }
                 // 사진 크게 보기의 공유·갤러리에서 열기: 사진 원본은 다른 앱이 MediaStore 주소로 읽는다
@@ -283,8 +286,14 @@ class MainActivity : FlutterActivity() {
             "persons" to n("SELECT COUNT(*) FROM (SELECT person FROM faces WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW})"),
             // 다시 묶기·밤 정리·지금 정리가 묶음·인물 지정을 바꿀 때마다 오르는 번호(#29). 화면이 바뀐 것을 보고 다시 읽는다
             "people_gen" to People.gen(this),
+            // 스캔이 구간(번호·장 수·표지)을 바꿀 때마다 오르는 번호(#31). 홈이 순간을 제자리에서 다시 읽는다
+            "segments_gen" to Scanner.segmentsGen(this),
         )
     }
+
+    /** 화면이 넘긴 순간(id·photo·start·end)을 지금 구간 번호로(#32, Moments.resolve) */
+    private fun segmentOf(call: io.flutter.plugin.common.MethodCall): Long? = Moments(this).resolve(call.argument<Number>("id")?.toLong(),
+        call.argument<Number>("photo")?.toLong(), call.argument<Number>("start")?.toLong(), call.argument<Number>("end")?.toLong())
 
     /**
      * 제조사가 따로 두는 백그라운드 설정 화면. 어느 화면을 열지는 화면 쪽 표(lib/vendors.dart)가 골라 넘긴다.
