@@ -809,7 +809,9 @@ class MomentCard extends StatelessWidget {
           MaterialPageRoute(
             builder: (_) => PhotosPage(
               title: title,
-              subtitle: '사진 ${fmtInt(n)}장${who.isEmpty ? '' : ' · ${who.join(', ')}'}',
+              // 장 수는 읽어 온 목록으로(#37): 보는 사이 사진을 지우면 줄고, 다 지우면 0장 + 빈 상태 문구
+              subtitleOf: (k) => '사진 ${fmtInt(k ?? n)}장${who.isEmpty ? '' : ' · ${who.join(', ')}'}',
+              empty: PhotosPage.emptyMoment,
               // 번호(id)는 스캔마다 다시 매겨진다: 표지 사진·시작~끝으로 지금 구간을 찾게 함께 넘긴다(#32)
               load: () => channel.invokeMethod('momentPhotos', {...momentKey(m['id'], covers.firstOrNull, m['start'], m['end']), 'person': person, ...?range?.args}),
             ),

@@ -1,7 +1,9 @@
 package com.reddol18.photo_tracer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -31,6 +33,24 @@ class SegmentSignatureTest {
 
     @Test fun 구간_경계만_옮겨도_달라진다() {
         assertNotEquals(Scanner.signature(listOf(seg(1, 2), seg(3, 4))), Scanner.signature(listOf(seg(1), seg(2, 3, 4))))
+    }
+
+    // #37: 구간 밖 사진('이름' 등)만 지워져 지문이 같아도, 사진이 바뀌었으면 번호를 올린다
+    @Test fun 구간_밖_사진만_지워져도_번호를_올린다() {
+        val sig = Scanner.signature(listOf(seg(1, 2, 3)))
+        assertTrue(Scanner.shouldBump(sig, sig, photosChanged = true))
+    }
+
+    @Test fun 사진도_지문도_그대로면_안_올린다() {
+        val sig = Scanner.signature(listOf(seg(1, 2, 3)))
+        assertFalse(Scanner.shouldBump(sig, sig, photosChanged = false))
+    }
+
+    @Test fun 지문이_다르거나_처음이면_올린다() {
+        val a = Scanner.signature(listOf(seg(1, 2, 3)))
+        val b = Scanner.signature(listOf(seg(1, 2)))
+        assertTrue(Scanner.shouldBump(a, b, photosChanged = false))
+        assertTrue(Scanner.shouldBump(null, a, photosChanged = false))
     }
 
     @Test fun 대표_사진은_시간상_고르게() {

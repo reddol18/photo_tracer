@@ -17,7 +17,11 @@ class _SearchPageState extends State<SearchPage> {
   final ctrl = TextEditingController();
   final focus = FocusNode();
   List<Map<String, dynamic>>? items; // null이면 처음 화면
-  String info = '';
+  // 결과 안내 문구의 재료. 떠 있는 결과에서 사라진 칸을 빼면(#37) 개수가 따라 바뀌게 문구는 그때그때 만든다
+  String? resWho; // 인물 검색이면 Kotlin의 인물 이름들
+  bool resRecent = false;
+  int resPhotos = 0; // 인물 검색의 인물 사진 수
+  int checkSeq = 0; // 늦게 온 옛 확인 결과가 덮지 않게
   String? error;
   bool busy = false;
   // 인물 칩(#5): 검색어 속 인물 낱말마다 앱이 고른 인물. 눌러서 바꾸면 picks에 넣어 다시 검색한다
@@ -42,6 +46,7 @@ class _SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
     peopleVersion.addListener(settle.call); // 다른 곳에서 인물을 바꾸면 이름·얼굴을 새로(#27). 잠깐 모아서(#29)
+    segmentsVersion.addListener(segSettle.call); // 갤러리에서 사진을 지우면 떠 있는 결과에서 사라진 칸을 뺀다(#37)
     onPeople();
     pref('recent').then((r) {
       if (mounted && r != null && r.isNotEmpty) setState(() => recent = r.split('\n'));
@@ -56,11 +61,14 @@ class _SearchPageState extends State<SearchPage> {
   void dispose() {
     SearchPage.debugQuery.removeListener(onDebugQuery);
     peopleVersion.removeListener(settle.call);
+    segmentsVersion.removeListener(segSettle.call);
     settle.cancel();
+    segSettle.cancel();
     super.dispose();
   }
 
   late final settle = Debounced(onPeople);
+  late final segSettle = Debounced(recheck);
   int peopleSeq = 0; // 늦게 온 옛 목록이 덮지 않게
 
   Future<void> onPeople() async {
@@ -121,17 +129,56 @@ class _SearchPageState extends State<SearchPage> {
         hint = r['hint'] == true;
         rest = r['rest'] as String? ?? '';
         items = list;
-        final photos = list.fold<int>(0, (a, e) => a + ((e['n'] as num?)?.toInt() ?? 1));
-        info = r['who'] != null
-            ? '${r['who']} 사진 ${fmtInt(r['photos'])}장 · ${rest.isEmpty ? '최근 순' : '"$rest" 잘 맞는 순'}'
-            : r['recent'] == true
-                ? '순간 ${list.length}개 · 사진 ${fmtInt(photos)}장 · 최근 순'
-                : '잘 맞는 순간 ${list.length}개 · 사진 ${fmtInt(photos)}장';
+        resWho = r['who'] as String?;
+        resRecent = r['recent'] == true;
+        resPhotos = (r['photos'] as num?)?.toInt() ?? 0;
       });
     } catch (e) {
       setState(() { error = '검색하지 못했어요. 잠시 뒤 다시 해 주세요.'; items = []; });
     } finally {
       setState(() => busy = false);
+    }
+  }
+
+  static int photoSum(List<Map<String, dynamic>> l) => l.fold<int>(0, (a, e) => a + ((e['n'] as num?)?.toInt() ?? 1));
+
+  /// 결과 안내: "딸 사진 12장 · 최근 순" / "순간 3개 · 사진 20장 · 최근 순" / "잘 맞는 순간 3개 · 사진 20장"
+  String get info {
+    final list = items ?? const [];
+    if (resWho != null) return '$resWho 사진 ${fmtInt(resPhotos)}장 · ${rest.isEmpty ? '최근 순' : '"$rest" 잘 맞는 순'}';
+    final photos = photoSum(list);
+    return resRecent ? '순간 ${list.length}개 · 사진 ${fmtInt(photos)}장 · 최근 순' : '잘 맞는 순간 ${list.length}개 · 사진 ${fmtInt(photos)}장';
+  }
+
+  /// 스캔이 구간을 바꾸면(#37, segmentsVersion) 떠 있는 결과의 칸이 지금도 있는지 Kotlin에 묻는다(다시 검색은 안 함).
+  /// 사라진 순간·지운 사진 칸은 빼고, 남은 칸은 장 수·표지를 지금 값으로. 날짜는 그대로(#32의 옛 값 한계)
+  Future<void> recheck() async {
+    final list = items;
+    if (!mounted || list == null || list.isEmpty || busy) return;
+    final s = ++checkSeq;
+    try {
+      final r = await channel.invokeMethod('checkMoments', {
+        'items': [
+          for (final it in list)
+            {'kind': it['kind'], 'id': it['id'], 'cover': it['cover'], 'date': it['date'], if (it['ids'] != null) 'ids': it['ids']},
+        ],
+      });
+      if (!mounted || s != checkSeq || !identical(items, list)) return; // 그사이 새로 검색했으면 버린다
+      final res = r as List;
+      if (res.length != list.length) return;
+      final next = <Map<String, dynamic>>[];
+      for (var i = 0; i < list.length; i++) {
+        final c = res[i];
+        if (c == null) continue; // 사라진 순간·지운 사진
+        final m = Map<String, dynamic>.from(c as Map);
+        next.add({...list[i], 'n': m['n'] ?? list[i]['n'], if (m['cover'] != null) 'cover': m['cover'], if (m['ids'] != null) 'ids': m['ids']});
+      }
+      setState(() {
+        resPhotos = (resPhotos - (photoSum(list) - photoSum(next))).clamp(0, 1 << 30);
+        items = next;
+      });
+    } catch (e) {
+      debugPrint('검색 결과 확인 실패: $e');
     }
   }
 
@@ -559,10 +606,15 @@ class _SearchPageState extends State<SearchPage> {
               borderRadius: BorderRadius.circular(14),
               onTap: () {
                 if (segment) {
-                  final ids = it['ids']; // 인물 검색: 구간 안의 그 인물 사진만
+                  final ids = it['ids']; // 인물 검색: 구간 안의 그 인물 사진만. 그사이 지운 사진은 빼고 읽는다(#37)
                   // 결과를 띄운 사이 스캔이 구간 번호를 다시 매겨도 맞는 순간이 열리게 표지 사진·시작 시각으로 찾는다(#32)
                   Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => PhotosPage(title: label, load: () async => ids ?? await channel.invokeMethod('segmentPhotos', momentKey(it['id'], it['cover'], it['date'], null)))));
+                      builder: (_) => PhotosPage(
+                          title: label,
+                          empty: PhotosPage.emptyMoment,
+                          load: () async => ids != null
+                              ? await channel.invokeMethod('alivePhotos', {'ids': ids})
+                              : await channel.invokeMethod('segmentPhotos', momentKey(it['id'], it['cover'], it['date'], null)))));
                 } else {
                   showPhoto(context, it['cover'] as int);
                 }

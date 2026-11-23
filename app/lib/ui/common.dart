@@ -451,11 +451,20 @@ Future<Map<String, dynamic>?> askPerson(BuildContext context, String title, [Map
 
 /// 사진 목록 화면(순간·인물·자동 묶음). load가 {id, face} 목록을 주면(자동 묶음) 묶인 얼굴을 귀퉁이에 보인다
 class PhotosPage extends StatefulWidget {
-  const PhotosPage({super.key, required this.title, required this.load, this.subtitle, this.header});
+  const PhotosPage(
+      {super.key, required this.title, required this.load, this.subtitle, this.subtitleOf, this.header, this.empty = emptyDefault});
   final String title;
   final String? subtitle;
+
+  /// 장 수로 만드는 부제(읽기 전이면 null). subtitle보다 우선
+  final String Function(int? n)? subtitleOf;
   final Widget? header;
   final Future<dynamic> Function() load;
+
+  /// 사진이 0장일 때의 문구(#37). 순간을 여는 쪽은 [emptyMoment]를 준다
+  final String empty;
+  static const emptyDefault = '보여 줄 사진이 없어요';
+  static const emptyMoment = '이 순간의 사진이 모두 지워졌어요';
 
   @override
   State<PhotosPage> createState() => _PhotosPageState();
@@ -463,6 +472,7 @@ class PhotosPage extends StatefulWidget {
 
 class _PhotosPageState extends State<PhotosPage> {
   List<int>? ids;
+  bool failed = false; // 목록을 못 읽음(#37): 스피너 대신 오류 문구 + 다시 시도. 전에 읽은 목록이 있으면 그것을 그대로 둔다
   final faces = <int, int>{}; // 사진 → 귀퉁이에 보일 얼굴
   int seq = 0; // 늦게 온 옛 목록이 덮지 않게
   int loadedVersion = -1; // 마지막으로 읽기 시작할 때의 peopleVersion
@@ -505,13 +515,22 @@ class _PhotosPageState extends State<PhotosPage> {
       }).toList();
       setState(() {
         ids = list;
+        failed = false;
         faces
           ..clear()
           ..addAll(f);
       });
     } catch (e) {
       debugPrint('사진 목록 읽기 실패: $e');
+      if (mounted && s == seq) setState(() => failed = true);
     }
+  }
+
+  /// 다시 시도: 오류 문구를 거두고 읽는 중으로
+  void retry() {
+    setState(() => failed = false);
+    settle.cancel();
+    _load();
   }
 
   /// 뷰어에서 돌아왔을 때 그사이 인물(또는 구간)이 바뀌었는데 아직 안 읽었으면 바로 읽는다
@@ -523,19 +542,42 @@ class _PhotosPageState extends State<PhotosPage> {
     }
   }
 
+  Widget _message(BuildContext context, IconData icon, String text, {Widget? action}) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 48, color: cs.onSurfaceVariant),
+          const SizedBox(height: 12),
+          Text(text, textAlign: TextAlign.center, style: TextStyle(fontSize: 15, color: cs.onSurfaceVariant)),
+          if (action != null) ...[const SizedBox(height: 16), action],
+        ]),
+      ),
+    );
+  }
+
+  Widget _emptyView(BuildContext context) => _message(context, Icons.photo_library_outlined, widget.empty);
+
+  Widget _failedView(BuildContext context) => _message(context, Icons.error_outline, '사진 목록을 읽지 못했어요',
+      action: OutlinedButton.icon(onPressed: retry, icon: const Icon(Icons.refresh), label: const Text('다시 시도')));
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
           title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(widget.title),
-            if (widget.subtitle != null || ids != null)
-              Text(widget.subtitle ?? '사진 ${fmtInt(ids!.length)}장', style: Theme.of(context).textTheme.bodySmall),
+            if (widget.subtitleOf != null || widget.subtitle != null || ids != null)
+              Text(widget.subtitleOf?.call(ids?.length) ?? widget.subtitle ?? '사진 ${fmtInt(ids!.length)}장',
+                  style: Theme.of(context).textTheme.bodySmall),
           ]),
         ),
         body: ids == null
-            ? const Center(child: CircularProgressIndicator())
+            ? (failed ? _failedView(context) : const Center(child: CircularProgressIndicator()))
             : CustomScrollView(slivers: [
                 if (widget.header != null) SliverToBoxAdapter(child: widget.header),
+                // 0장(#37): 순간의 사진을 갤러리에서 모두 지웠거나 거르기에 남은 사진이 없음
+                if (ids!.isEmpty) SliverFillRemaining(hasScrollBody: false, child: _emptyView(context)),
                 SliverPadding(
                   padding: const EdgeInsets.all(2),
                   sliver: SliverGrid(
@@ -607,7 +649,8 @@ class Thumb extends StatelessWidget {
   }
   static final _big = <int, Future<Uint8List?>>{}; // 크게 보기용 원본 축소본: 커서 몇 장만 둔다
 
-  /// 크게 보기용: 원본을 긴 변 1600px로 줄인 것 (썸네일은 크게 늘리면 뭉개진다)
+  /// 크게 보기용: 원본을 긴 변 1600px로 줄인 것 (썸네일은 크게 늘리면 뭉개진다).
+  /// null이면 지운 사진(#37: Kotlin이 파일 없음을 null로 준다), 오류면 읽을 수 없는 사진
   static Future<Uint8List?> full(int id) {
     final f = _big.remove(id) ?? channel.invokeMethod<Uint8List>('photo', {'id': id, 'max': 1600}).catchError((_) => bytes(id, 1024));
     _big[id] = f;
@@ -638,10 +681,22 @@ class Thumb extends StatelessWidget {
 
   Widget _image(BuildContext context, int s) => FutureBuilder<Uint8List?>(
         future: bytes(id, s, face: face),
-        builder: (context, snap) => snap.data == null
-            ? Container(color: Theme.of(context).colorScheme.surfaceContainerHighest)
+        builder: (context, snap) {
+          final cs = Theme.of(context).colorScheme;
+          if (snap.data != null) {
             // 받은 그림이 이미 칸 픽셀에 맞으므로 cacheWidth로 줄여 풀 필요는 없다
-            : Image.memory(snap.data!, fit: fit, gaplessPlayback: true),
+            return Image.memory(snap.data!, fit: fit, gaplessPlayback: true);
+          }
+          // 읽는 중이면 빈 회색 칸, 못 읽었으면(지운 사진 null·오류, #37) 회색 칸에 작은 아이콘
+          if (snap.connectionState != ConnectionState.done) return Container(color: cs.surfaceContainerHighest);
+          return Container(
+            key: const ValueKey('thumb-missing'),
+            color: cs.surfaceContainerHighest,
+            padding: const EdgeInsets.all(6),
+            alignment: Alignment.center,
+            child: FittedBox(child: Icon(Icons.image_not_supported_outlined, color: cs.onSurfaceVariant.withValues(alpha: 0.6))),
+          );
+        },
       );
 
   @override
@@ -692,7 +747,13 @@ class _FacePhotoState extends State<FacePhoto> {
         future: image,
         builder: (context, snap) {
           final r = snap.data;
-          if (r == null) return const SizedBox(height: 240, child: Center(child: CircularProgressIndicator()));
+          if (r == null) {
+            // '읽는 중'과 '못 읽음'을 가른다(#37): 지운 사진(null)이나 읽기 오류에 스피너를 끝없이 돌리지 않는다. 상자·이름표도 없다
+            if (snap.connectionState != ConnectionState.done) {
+              return const SizedBox(height: 240, child: Center(child: CircularProgressIndicator()));
+            }
+            return _missing(context, snap.hasError ? '이 사진을 읽을 수 없어요' : '이 사진은 지워졌어요');
+          }
           final (data, img) = r;
           return AspectRatio(
             aspectRatio: img.width / img.height,
@@ -727,6 +788,22 @@ class _FacePhotoState extends State<FacePhoto> {
           );
         },
       );
+
+  /// 사진을 못 읽었을 때의 빈 상태: 아이콘 + 한 줄. 뷰어에서는 이 페이지도 그대로 넘길 수 있다
+  Widget _missing(BuildContext context, String text) {
+    final cs = Theme.of(context).colorScheme;
+    return SizedBox(
+      key: const ValueKey('photo-missing'),
+      height: 240,
+      child: Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.image_not_supported_outlined, size: 48, color: cs.onSurfaceVariant),
+          const SizedBox(height: 12),
+          Text(text, style: TextStyle(fontSize: 15, color: cs.onSurfaceVariant)),
+        ]),
+      ),
+    );
+  }
 
   /// 상자(그림)와 이름표(위젯) 층. s는 바깥 확대 배율 — 이름표는 1/s로 되돌려 화면 크기를 지킨다.
   /// 이름표는 누름을 받지 않아(IgnorePointer) 얼굴 탭 판정은 그대로 사진 좌표로 된다

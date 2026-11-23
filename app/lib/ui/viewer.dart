@@ -21,10 +21,13 @@ class PhotoViewer extends StatefulWidget {
 class _PhotoViewerState extends State<PhotoViewer> {
   late final pages = PageController(initialPage: widget.start);
   late int index = widget.start;
+  // 넘겨 볼 사진. 보는 사이 갤러리에서 지운 사진은 구간이 바뀔 때(segmentsVersion) 뺀다(#37). 보고 있는 사진은 남겨 둔다
+  late List<int> ids = [...widget.ids];
+  bool pruning = false; // 목록을 줄이며 페이지를 옮기는 중: 그때의 onPageChanged는 옛 목록 기준이라 무시한다
   final infos = <int, Map<String, dynamic>>{};
   List<Map<String, dynamic>> people = [];
 
-  int get id => widget.ids[index];
+  int get id => ids[index];
   Map<String, dynamic>? get info => infos[id];
 
   // ── 확대/축소와 넘기기(#12): 확대 중이거나 손가락이 2개 이상이면 PageView 넘기기를 끈다
@@ -88,8 +91,43 @@ class _PhotoViewerState extends State<PhotoViewer> {
     ShowFaces.on.addListener(onShowFaces);
     // 밤 정리·다시 묶기 끝(status)이나 다른 곳에서 인물이 바뀌어도 이름표·'누구인가요?' 시트를 새로(#29 C)
     peopleVersion.addListener(settle.call);
+    segmentsVersion.addListener(segSettle.call);
     loadNames();
     load(id);
+  }
+
+  late final segSettle = Debounced(prune);
+  int pruneSeq = 0;
+
+  /// 스캔이 구간을 바꾸면(#37) 넘겨 볼 목록에서 지운 사진을 뺀다. 지금 보는 사진은 지웠어도 남긴다('지워졌어요'로 보임).
+  /// 못 빼더라도 지운 사진 페이지는 빈 상태로 보이고 넘길 수 있다
+  Future<void> prune() async {
+    if (ids.length < 2) return;
+    final s = ++pruneSeq;
+    try {
+      final r = await channel.invokeMethod('alivePhotos', {'ids': ids});
+      if (!mounted || s != pruneSeq) return;
+      final alive = {for (final e in r as List) (e as num).toInt()};
+      final cur = id;
+      final next = [for (final e in ids) if (e == cur || alive.contains(e)) e];
+      if (next.length == ids.length) return;
+      final i = next.indexOf(cur);
+      // 페이지를 먼저 옮기고(옛 목록에서도 i ≤ index라 그 자리가 있다) 같은 프레임에 목록을 바꾼다
+      pruning = true;
+      if (pages.hasClients) pages.jumpToPage(i);
+      pruning = false;
+      setState(() {
+        ids = next;
+        index = i;
+        // 배율은 페이지 번호로 두므로 번호가 밀리면 원래대로
+        for (final c in zooms.values) {
+          c.value = Matrix4.identity();
+        }
+        zoomed = false;
+      });
+    } catch (e) {
+      debugPrint('뷰어 목록 확인 실패: $e');
+    }
   }
 
   Future<void> loadNames() async {
@@ -114,7 +152,9 @@ class _PhotoViewerState extends State<PhotoViewer> {
   @override
   void dispose() {
     peopleVersion.removeListener(settle.call);
+    segmentsVersion.removeListener(segSettle.call);
     settle.cancel();
+    segSettle.cancel();
     ShowFaces.on.removeListener(onShowFaces);
     for (final c in zooms.values) {
       c.dispose();
@@ -124,8 +164,14 @@ class _PhotoViewerState extends State<PhotoViewer> {
   }
 
   Future<void> load(int id) async {
-    final m = Map<String, dynamic>.from(await channel.invokeMethod('photoInfo', {'id': id}) as Map);
-    if (mounted) setState(() => infos[id] = m);
+    try {
+      final r = await channel.invokeMethod('photoInfo', {'id': id});
+      // DB에 없는 사진(갤러리에서 지움, #37)은 얼굴 없음으로 둔다 — 사진 칸은 FacePhoto가 '지워졌어요'로 보인다
+      final m = r == null ? <String, dynamic>{'faces': <Object>[], 'gone': true} : Map<String, dynamic>.from(r as Map);
+      if (mounted) setState(() => infos[id] = m);
+    } catch (e) {
+      debugPrint('사진 정보 읽기 실패: $e');
+    }
   }
 
   int? get year => info?['taken'] == null ? null : DateTime.fromMillisecondsSinceEpoch(info!['taken'] as int).year;
@@ -151,7 +197,7 @@ class _PhotoViewerState extends State<PhotoViewer> {
 
   void details() {
     final m = info;
-    if (m == null) return;
+    if (m == null || m['gone'] == true) return;
     final src = m['date_source'];
     showModalBottomSheet(
       context: context,
@@ -299,9 +345,9 @@ class _PhotoViewerState extends State<PhotoViewer> {
           backgroundColor: const Color(0xFF0B0B0D),
           foregroundColor: fg,
           title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(m == null ? '' : m['taken'] == null ? '찍은 날 모름' : fmtDay(m['taken'] as int, year: true),
+            Text(m == null ? '' : m['gone'] == true ? '지워진 사진' : m['taken'] == null ? '찍은 날 모름' : fmtDay(m['taken'] as int, year: true),
                 style: const TextStyle(fontSize: 16, color: fg)),
-            Text('${m?['taken'] == null ? '' : '${fmtTime(m!['taken'] as int)} · '}${index + 1} / ${widget.ids.length}',
+            Text('${m?['taken'] == null ? '' : '${fmtTime(m!['taken'] as int)} · '}${index + 1} / ${ids.length}',
                 style: const TextStyle(fontSize: 12, color: Color(0xFFD1D5DB))),
           ]),
         ),
@@ -315,8 +361,9 @@ class _PhotoViewerState extends State<PhotoViewer> {
               child: PageView.builder(
                 controller: pages,
                 physics: locked ? const NeverScrollableScrollPhysics() : null,
-                itemCount: widget.ids.length,
+                itemCount: ids.length,
                 onPageChanged: (i) {
+                  if (pruning) return;
                   setState(() {
                     index = i;
                     // 다른 페이지로 넘어가면 나머지 페이지 배율은 원래대로
@@ -325,10 +372,10 @@ class _PhotoViewerState extends State<PhotoViewer> {
                     }
                     zoomed = zooms[i] != null && isZoomed(zooms[i]!);
                   });
-                  if (!infos.containsKey(widget.ids[i])) load(widget.ids[i]);
+                  if (!infos.containsKey(ids[i])) load(ids[i]);
                 },
                 itemBuilder: (context, i) {
-                  final pid = widget.ids[i];
+                  final pid = ids[i];
                   final y = infos[pid]?['taken'] == null ? null : DateTime.fromMillisecondsSinceEpoch(infos[pid]!['taken'] as int).year;
                   // 확대 영역은 페이지 전체: 사진 위아래 빈 곳에서 시작해도 확대된다. 얼굴 상자는 사진 위젯 안에 그려지고
                   // 누른 곳도 변환을 거쳐 사진 좌표로 오므로 확대 상태에서도 맞다

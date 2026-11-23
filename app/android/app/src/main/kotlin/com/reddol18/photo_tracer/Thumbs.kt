@@ -10,6 +10,7 @@ import android.os.Build
 import android.util.Log
 import android.util.Size
 import androidx.exifinterface.media.ExifInterface
+import java.io.FileNotFoundException
 import java.io.IOException
 
 /**
@@ -56,6 +57,8 @@ object Thumbs {
                 if (s < 1) dec.setTargetSize((origW * s).toInt().coerceAtLeast(1), (origH * s).toInt().coerceAtLeast(1))
                 dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE // compress·getPixels하려면 소프트웨어 비트맵이어야 한다
             }
+        } catch (e: FileNotFoundException) {
+            throw e // 파일 없음(지운 사진, #37): 다른 길로 물러서도 소용없다 — 부른 쪽이 한 줄로 남긴다
         } catch (e: IOException) {
             Log.w(TAG, "decode ImageDecoder 1차(setTargetSize) 실패: mime=$mime size=${origW}x$origH — ${e.message}")
             null
@@ -75,6 +78,8 @@ object Thumbs {
                 dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
             return fitLongSide(bmp, max)
+        } catch (e: FileNotFoundException) {
+            throw e // 파일 없음(#37): 3차도 같은 이유로 실패한다
         } catch (e: IOException) {
             Log.w(TAG, "decode ImageDecoder 2차(setTargetSampleSize) 실패: mime=$mime size=${origW}x$origH — ${e.message}")
         }
@@ -88,6 +93,7 @@ object Thumbs {
     /**
      * BitmapFactory 표본 디코드: 크기만 읽고 → 2의 거듭제곱 inSampleSize로 읽고 → 긴 변 max로 줄이고 → EXIF 회전·뒤집기 적용.
      * 스트림은 단계마다 새로 연다. 디코드 실패(null)나 예외면 null(호출부가 ImageDecoder로 물러선다).
+     * 파일 없음(FileNotFoundException, 지운 사진 #37)은 물러서도 소용없어 그대로 던진다.
      */
     private fun factoryDecode(ctx: Context, uri: Uri, max: Int, mime: String?): Bitmap? {
         val cr = ctx.contentResolver
@@ -119,6 +125,8 @@ object Thumbs {
             val out = applyOrientation(cur, orientation)
             cur = null
             return out
+        } catch (e: FileNotFoundException) {
+            throw e // 파일 없음(#37): ImageDecoder로 물러서도 소용없다
         } catch (e: Exception) {
             Log.w(TAG, "decode BitmapFactory 실패: mime=$mime size=${origW}x$origH — ${e.javaClass.simpleName}: ${e.message}")
             cur?.recycle()

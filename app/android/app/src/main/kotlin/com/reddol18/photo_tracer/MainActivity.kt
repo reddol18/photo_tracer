@@ -19,6 +19,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.io.FileNotFoundException
 import java.util.concurrent.Executors
 
 /** 화면(Flutter)과 엔진(Kotlin) 사이 통로. 무거운 일은 작업 스레드에서 하고 결과만 넘긴다. */
@@ -176,9 +177,14 @@ class MainActivity : FlutterActivity() {
                 "fakeCounts" -> bg { (1..2).map { k -> db.count("SELECT COUNT(*) FROM photos WHERE fake = ?", k.toString()) } }
                 "whoRejectAll" ->bg { Who(this).rejectAll(call.argument<Number>("photo")!!.toLong()) }
                 "whoMerge" ->bg { Who(this).merge(longs(call.argument("ids"))) }
-                "thumb" -> bg(thumbs) { thumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 256) }
-                "photo" -> bg(thumbs) { photo(call.argument<Number>("id")!!.toLong(), call.argument<Int>("max") ?: 1600) }
-                "faceThumb" -> bg(thumbs) { faceThumb(call.argument<Number>("id")!!.toLong(), call.argument<Int>("size") ?: 160) }
+                // 지운 사진(#37)은 오류 대신 null: 화면이 '지워졌어요'로 보인다. 다른 오류는 그대로 오류
+                "thumb" -> bg(thumbs) { call.argument<Number>("id")!!.toLong().let { id -> orGone("thumb", id) { thumb(id, call.argument<Int>("size") ?: 256) } } }
+                "photo" -> bg(thumbs) { call.argument<Number>("id")!!.toLong().let { id -> orGone("photo", id) { photo(id, call.argument<Int>("max") ?: 1600) } } }
+                "faceThumb" -> bg(thumbs) { call.argument<Number>("id")!!.toLong().let { id -> orGone("faceThumb", id) { faceThumb(id, call.argument<Int>("size") ?: 160) } } }
+                // 떠 있는 검색 결과·뷰어가 구간이 바뀐 뒤(#37) 지금도 있는 사진만 추린다(순서 그대로)
+                "alivePhotos" -> bg { Moments(this).alive(longs(call.argument("ids"))) }
+                // 떠 있는 검색 결과의 칸(#37): 칸마다 지금 장 수·표지, 사라졌으면 null
+                "checkMoments" -> bg { Moments(this).check(call.argument<List<Map<String, Any?>>>("items").orEmpty()) }
                 "photoInfo" -> bg {
                     val id = call.argument<Number>("id").toString()
                     // 얼굴 위치(사진 대비 0~1)와 묶인 인물 — 사진 위에 상자로 그린다
@@ -287,7 +293,7 @@ class MainActivity : FlutterActivity() {
             // 다시 묶기·밤 정리·지금 정리가 묶음·인물 지정을 바꿀 때마다 오르는 번호(#29). 화면이 바뀐 것을 보고 다시 읽는다
             "people_gen" to People.gen(this),
             // 스캔이 구간(번호·장 수·표지)을 바꿀 때마다 오르는 번호(#31). 홈이 순간을 제자리에서 다시 읽는다
-            "segments_gen" to Scanner.segmentsGen(this),
+            "segments_gen" to Scanner.galleryGen(this),
         )
     }
 
@@ -333,6 +339,17 @@ class MainActivity : FlutterActivity() {
     private fun cover(db: Db, person: Long): Long =
         db.readableDatabase.rawQuery("SELECT id FROM faces WHERE person = ? ORDER BY w * h DESC LIMIT 1", arrayOf(person.toString()))
             .use { if (it.moveToFirst()) it.getLong(0) else 0L }
+
+    /**
+     * 갤러리에서 지운 사진(#37): 스캔이 DB에서 빼기 전·뺀 뒤에도 화면이 옛 id를 요청할 수 있다.
+     * 파일 없음은 예외 스택(E) 대신 한 줄 W 로그와 null. 다른 예외는 그대로 던진다(bg가 E 로그 + 채널 오류)
+     */
+    private inline fun <T> orGone(what: String, id: Long, block: () -> T): T? = try {
+        block()
+    } catch (e: FileNotFoundException) {
+        Log.w("PhotoTracer", "$what id=$id 파일 없음(지운 사진)")
+        null
+    }
 
     /** 원본이 받은 썸네일보다 크지 않아 다시 읽을 필요가 없을 때 디코딩을 멈추려고 던진다 */
     private class NotBigger : Exception()

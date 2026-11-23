@@ -31,6 +31,16 @@ object MonthIndex {
     }
 }
 
+/** 검색 결과 칸 확인(#37)의 순수한 부분: 인물 검색 칸(사진 ids)에서 남은 사진으로 장 수·표지를 다시 정한다 */
+object MomentCheck {
+    /** 남은 사진이 없으면 null(칸이 사라짐). 표지가 남았으면 그대로, 지워졌으면 남은 것 중 첫 장 */
+    fun ofIds(ids: List<Long>, alive: Set<Long>, cover: Long?): Map<String, Any?>? {
+        val left = ids.filter { it in alive }
+        if (left.isEmpty()) return null
+        return mapOf("n" to left.size, "cover" to (if (cover != null && cover in alive) cover else left.first()), "ids" to left)
+    }
+}
+
 /**
  * 홈 화면용: 시간 구간(segments)을 '순간'으로 보여 준다. 구간은 갤러리를 읽자마자 생기므로 밤 정리 전에도 볼 수 있다.
  * 인물을 고르면 그 인물이 나온 순간만, 표지도 그 인물 사진으로.
@@ -136,6 +146,44 @@ class Moments(ctx: Context) {
             }
         }
         return if (photo == null) id else null
+    }
+
+    /** ids 중 지금도 DB에 있는 사진(#37), 순서 그대로. 스캔이 지운 사진을 빼므로 DB에 없으면 지운 사진 */
+    fun alive(ids: List<Long>): List<Long> {
+        if (ids.isEmpty()) return emptyList()
+        val have = HashSet<Long>()
+        // SQLite 바인딩 인자 상한(999)을 넘지 않게 나눠 묻는다
+        for (part in ids.distinct().chunked(500)) {
+            db.readableDatabase.rawQuery("SELECT id FROM photos WHERE id IN (${part.joinToString(",") { "?" }})",
+                part.map { it.toString() }.toTypedArray()).use { while (it.moveToNext()) have.add(it.getLong(0)) }
+        }
+        return ids.filter { it in have }
+    }
+
+    /**
+     * 떠 있는 검색 결과의 칸들이 지금도 있는지(#37). 칸마다 {kind, id, cover, date, ids?}를 받아
+     * 있으면 {n, cover, ids?}(지금 장 수·표지), 사라졌으면 null을 같은 순서로 돌려준다. 날짜는 그대로 둔다(#32의 옛 값 한계).
+     *  - ids가 있는 칸(인물 검색): 그 사진 중 남은 것. 다 지웠으면 사라짐
+     *  - 순간 칸: resolve(#32)로 지금 구간을 찾아 그 구간의 사진 수. 못 찾거나 0장이면 사라짐
+     *  - 사진 한 장 칸: 그 사진이 남아 있나
+     */
+    fun check(items: List<Map<String, Any?>>): List<Map<String, Any?>?> = items.map { item ->
+        val cover = (item["cover"] as? Number)?.toLong()
+        @Suppress("UNCHECKED_CAST")
+        val ids = (item["ids"] as? List<Number>)?.map { it.toLong() }
+        when {
+            ids != null -> MomentCheck.ofIds(ids, alive(ids).toSet(), cover)
+            item["kind"] == "segment" -> {
+                val seg = resolve((item["id"] as? Number)?.toLong(), cover, (item["date"] as? Number)?.toLong(), null)
+                val n = if (seg == null) 0 else db.count("SELECT COUNT(*) FROM photos WHERE segment = ?", seg.toString())
+                if (seg == null || n == 0) null
+                else {
+                    val still = cover != null && db.count("SELECT COUNT(*) FROM photos WHERE id = ? AND segment = ?", cover.toString(), seg.toString()) > 0
+                    mapOf("n" to n, "cover" to (if (still) cover else photos(seg, null, 1).firstOrNull()))
+                }
+            }
+            else -> if (cover != null && alive(listOf(cover)).isNotEmpty()) mapOf("n" to 1, "cover" to cover) else null
+        }
     }
 
     private fun taken(id: Long): Long =

@@ -78,13 +78,25 @@ class Scanner(private val ctx: Context) {
 
         private fun segPrefs(ctx: Context) = ctx.getSharedPreferences("segments", Context.MODE_PRIVATE)
 
-        /** 스캔이 구간을 바꾼 횟수(#31·#32). status에 실려 홈이 순간을 제자리에서 다시 읽는다 */
-        fun segmentsGen(ctx: Context): Int = segPrefs(ctx).getInt("gen", 0)
+        /**
+         * 갤러리·구간이 바뀐 번호(#31·#32·#37). status의 "segments_gen"(키 이름은 Dart와 맞물려 그대로)에 실려,
+         * 홈·검색 결과·뷰어·목록이 이 번호가 오르면 제자리에서 다시 읽는다
+         */
+        fun galleryGen(ctx: Context): Int = segPrefs(ctx).getInt("gen", 0)
 
-        /** 새 구간의 지문이 지난번과 다를 때만 번호를 올린다. 바뀌었으면 true */
-        private fun segmentsChanged(ctx: Context, sig: Long): Boolean {
+        /**
+         * 번호를 올릴지(#37): 스캔이 사진을 넣거나 지웠으면 구간 지문이 같아도 올린다 —
+         * 구간 대상이 아닌 사진('이름'·'없음'·'화면 캡처')이 지워져도 떠 있는 목록이 알아야 한다.
+         * 사진은 그대로인데 지문만 다르거나 처음이면(prevSig == null) 올린다
+         */
+        fun shouldBump(prevSig: Long?, sig: Long, photosChanged: Boolean): Boolean =
+            photosChanged || prevSig != sig
+
+        /** 지문을 저장하고, shouldBump면 번호를 한 번 올린다. 올렸으면 true */
+        private fun bumpGalleryGen(ctx: Context, sig: Long, photosChanged: Boolean): Boolean {
             val p = segPrefs(ctx)
-            if (p.contains("sig") && p.getLong("sig", 0) == sig) return false
+            val prev = if (p.contains("sig")) p.getLong("sig", 0) else null
+            if (!shouldBump(prev, sig, photosChanged)) return false
             p.edit().putLong("sig", sig).putInt("gen", p.getInt("gen", 0) + 1).apply()
             return true
         }
@@ -204,7 +216,8 @@ class Scanner(private val ctx: Context) {
         }
         if (added > 0 || gone.isNotEmpty()) {
             massMoveDays()
-            segment()
+            // 사진을 넣거나 지웠으니 구간 지문이 같아도 번호는 한 번 오른다(#37)
+            segment(photosChanged = true)
         }
         Log.i("PhotoTracer", "스캔 끝: 새 사진 $added, 지운 사진 ${gone.size}, ${System.currentTimeMillis() - t0}ms")
         return added + gone.size
@@ -254,7 +267,8 @@ class Scanner(private val ctx: Context) {
 
     private class Shot(val id: Long, val t: Long, val ll: DoubleArray?)
 
-    private fun segment() {
+    /** photosChanged: 이번 스캔이 photos에 사진을 넣거나 지웠는지. 그러면 지문이 같아도 번호를 올린다(#37) */
+    private fun segment(photosChanged: Boolean) {
         val w = db.writableDatabase
         val shots = ArrayList<Shot>()
         w.rawQuery("""SELECT id, taken_at, lat, lon FROM photos WHERE date_source IN ('카메라', '기타 EXIF')
@@ -293,8 +307,8 @@ class Scanner(private val ctx: Context) {
             }
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
-        // 저장한 뒤에 번호를 올린다: 화면이 번호를 보고 읽을 때는 새 구간이 이미 들어가 있다(#31)
-        val moved = segmentsChanged(ctx, signature(events.map { e -> e.map { it.id to it.t } }))
-        Log.i("PhotoTracer", "구간 ${events.size}개 · 대표 사진 ${events.sumOf { reps(it.size) }}장 (구간 대상 ${shots.size}장)${if (moved) " · 바뀜" else ""}")
+        // 저장한 뒤에 한 번만 번호를 올린다: 화면이 번호를 보고 읽을 때는 새 구간·사진이 이미 들어가 있다(#31·#37)
+        val bumped = bumpGalleryGen(ctx, signature(events.map { e -> e.map { it.id to it.t } }), photosChanged)
+        Log.i("PhotoTracer", "구간 ${events.size}개 · 대표 사진 ${events.sumOf { reps(it.size) }}장 (구간 대상 ${shots.size}장)${if (bumped) " · 번호 올림" else ""}")
     }
 }
