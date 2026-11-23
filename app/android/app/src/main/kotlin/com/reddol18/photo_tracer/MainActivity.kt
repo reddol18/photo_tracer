@@ -15,7 +15,6 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
-import android.util.Size
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -60,7 +59,8 @@ class MainActivity : FlutterActivity() {
 
     private val permissions = buildList {
         add(if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE)
-        add(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        // 위치 가리기가 29부터라 28에는 이 권한이 없다. 사진 권한은 [0] 그대로 (#26)
+        if (Build.VERSION.SDK_INT >= 29) add(Manifest.permission.ACCESS_MEDIA_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }
 
@@ -341,11 +341,13 @@ class MainActivity : FlutterActivity() {
     private fun thumb(id: Long, size: Int): ByteArray {
         val t0 = SystemClock.elapsedRealtime()
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-        var bmp = contentResolver.loadThumbnail(uri, Size(size, size), null)
+        var bmp = Thumbs.load(this, uri, size) // 28은 여기서 이미 원본을 긴 변 size로 줄여 읽는다 (#26)
         val got = maxOf(bmp.width, bmp.height)
-        var via = "thumb"
-        var orig = if (THUMB_LOG || got < size * 0.8) mediaSize(id) else 0 to 0
-        if (got < size * 0.8 && (maxOf(orig.first, orig.second) == 0 || maxOf(orig.first, orig.second) > got)) {
+        var via = if (Build.VERSION.SDK_INT >= 29) "thumb" else "decode"
+        // 28은 이미 원본에서 읽었다: 작게 나왔으면 원본이 작은 것이라 다시 읽지 않는다
+        val small = Build.VERSION.SDK_INT >= 29 && got < size * 0.8
+        var orig = if (THUMB_LOG || small) mediaSize(id) else 0 to 0
+        if (small && (maxOf(orig.first, orig.second) == 0 || maxOf(orig.first, orig.second) > got)) {
             try {
                 bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { dec, info, _ ->
                     val w = info.size.width
@@ -381,14 +383,7 @@ class MainActivity : FlutterActivity() {
     /** 크게 보기용: 원본을 긴 변 max px로 줄여 읽는다(회전 정보 반영). 썸네일(loadThumbnail)은 크게 보면 뭉개진다 */
     private fun photo(id: Long, max: Int): ByteArray {
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-        val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { dec, info, _ ->
-            val w = info.size.width
-            val h = info.size.height
-            val s = max.toDouble() / maxOf(w, h)
-            if (s < 1) dec.setTargetSize((w * s).toInt().coerceAtLeast(1), (h * s).toInt().coerceAtLeast(1))
-            dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE // compress하려면 소프트웨어 비트맵이어야 한다
-        }
-        return jpeg(bmp)
+        return jpeg(Thumbs.decode(this, uri, max))
     }
 
     /** 얼굴 조각. 기본 160px, '이 사람 맞나요?'처럼 크게 보일 때는 더 크게 */

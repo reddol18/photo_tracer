@@ -16,8 +16,9 @@ android {
 
     defaultConfig {
         applicationId = "com.reddol18.photo_tracer"
-        // ImageDecoder(HEIC)·열 상태 API. 최소 지원 버전은 버전별 사용 비율을 확인한 뒤 정한다
-        minSdk = 29
+        // ImageDecoder(HEIC)가 28부터라 28이 바닥. 갤럭시 S8 같은 Android 9 폰도 받으려고 29에서 낮췄다 (#26)
+        // 29 이상 API(RELATIVE_PATH·loadThumbnail·열 상태·setRequireOriginal)는 SDK_INT로 나눠 쓴다
+        minSdk = 28
         ndk { abiFilters += listOf("arm64-v8a") }
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -67,5 +68,7 @@ dependencies {
     // PC 검증(poc/, onnxruntime 1.31)과 같은 버전 — 가중치 8비트(MatMulNBits) 커널 차이를 없앤다
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+    // 프레임워크 ExifInterface는 29에서 시간대 태그(OFFSET_TIME_ORIGINAL)를 못 읽는다. androidx는 버전과 무관하게 읽는다 (#26)
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
     testImplementation("junit:junit:4.13.2")
 }

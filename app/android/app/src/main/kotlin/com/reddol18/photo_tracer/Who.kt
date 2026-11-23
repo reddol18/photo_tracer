@@ -7,7 +7,6 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.provider.MediaStore
 import android.util.Log
-import android.util.Size
 import java.io.File
 
 /**
@@ -73,7 +72,8 @@ class Who(private val ctx: Context) {
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, f[0].toLong())
         // 768로 읽으면 작은 얼굴은 잘라낸 조각이 몇십 픽셀뿐이라 흐리다 → 얼굴 조각이 200픽셀쯤 되게 읽는다
         val side = (200 / (maxOf(f[3], f[4]) * 1.3)).toInt().coerceIn(768, FACE_MAX)
-        val bmp = ctx.contentResolver.loadThumbnail(uri, Size(side, side), null)
+        // 얼굴 좌표는 회전 반영 이미지 기준 비율이라 28(ImageDecoder 원본 축소)에서도 그대로 맞는다 (#26)
+        val bmp = Thumbs.load(ctx, uri, side)
         val cx = (f[1] + f[3] / 2) * bmp.width; val cy = (f[2] + f[4] / 2) * bmp.height
         val half = maxOf(f[3] * bmp.width, f[4] * bmp.height) * 0.65
         val r = Rect((cx - half).toInt().coerceAtLeast(0), (cy - half).toInt().coerceAtLeast(0),

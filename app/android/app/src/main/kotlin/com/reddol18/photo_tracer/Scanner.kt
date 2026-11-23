@@ -4,8 +4,10 @@ import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
-import android.media.ExifInterface
+import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
+import androidx.exifinterface.media.ExifInterface
 import android.util.Log
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -66,6 +68,26 @@ class Scanner(private val ctx: Context) {
         }
 
         private fun LocalDateTime.toMs(): Long = atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+        /** 저장소 루트 꼴: /storage/emulated/0/ (사용자 번호 아무거나), SD카드 /storage/XXXX-XXXX/ */
+        private val STORAGE_ROOT = Regex("^/storage/(?:emulated/\\d+|[^/]+)/")
+
+        /**
+         * 28용: 절대 경로(DATA)를 RELATIVE_PATH 꼴('DCIM/Screenshots/')로 바꾼다 (#26).
+         * RELATIVE_PATH(29)가 없어 DATA에서 만든다 — SCREEN_DIRS·Fake.kt의 startsWith 비교가 그대로 맞게 끝에 '/'를 붙인다.
+         * root는 Environment.getExternalStorageDirectory() 경로(시험에서 안드로이드 없이 부르려고 밖에서 받는다).
+         * 루트 바로 아래 파일은 ""(29의 RELATIVE_PATH도 그 자리는 빈 값과 같은 뜻), DATA가 없으면 null.
+         */
+        fun relPath(data: String?, root: String?): String? {
+            if (data.isNullOrEmpty()) return null
+            val r = root?.trimEnd('/')?.takeIf { it.isNotEmpty() }?.let { "$it/" }
+            val rest = when {
+                r != null && data.startsWith(r) -> data.substring(r.length)
+                else -> STORAGE_ROOT.find(data)?.let { data.substring(it.range.last + 1) } ?: data.trimStart('/')
+            }
+            val slash = rest.lastIndexOf('/')
+            return if (slash < 0) "" else rest.substring(0, slash + 1)
+        }
     }
 
     private val db = Db.get(ctx)
@@ -80,8 +102,12 @@ class Scanner(private val ctx: Context) {
         val w = db.writableDatabase
         val known = HashSet<Long>()
         w.rawQuery("SELECT id FROM photos", null).use { while (it.moveToNext()) known.add(it.getLong(0)) }
+        // RELATIVE_PATH는 29부터. 28은 DATA(절대 경로)를 읽어 같은 꼴로 바꾼다 (#26)
+        val q = Build.VERSION.SDK_INT >= 29
+        val root = if (q) null else Environment.getExternalStorageDirectory()?.absolutePath
+        @Suppress("DEPRECATION")
         val cols = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.RELATIVE_PATH, MediaStore.Images.Media.MIME_TYPE,
+            if (q) MediaStore.Images.Media.RELATIVE_PATH else MediaStore.Images.Media.DATA, MediaStore.Images.Media.MIME_TYPE,
             MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.WIDTH, MediaStore.Images.Media.HEIGHT)
         val seen = HashSet<Long>()
         var added = 0
@@ -99,7 +125,7 @@ class Scanner(private val ctx: Context) {
                 if (id in known) continue
                 val v = ContentValues()
                 val name = c.getString(1) ?: ""
-                val path = c.getString(2) ?: ""
+                val path = (if (q) c.getString(2) else relPath(c.getString(2), root)) ?: ""
                 val mime = c.getString(3) ?: ""
                 v.put("id", id); v.put("name", name); v.put("path", path); v.put("mime", mime)
                 v.put("w", c.getInt(5)); v.put("h", c.getInt(6))
@@ -145,8 +171,9 @@ class Scanner(private val ctx: Context) {
 
     private fun readExif(id: Long, v: ContentValues) {
         try {
-            // 위치 정보는 원본을 요청해야 가려지지 않는다(ACCESS_MEDIA_LOCATION)
-            val uri = MediaStore.setRequireOriginal(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id))
+            // 위치 정보는 원본을 요청해야 가려지지 않는다(ACCESS_MEDIA_LOCATION). 28은 가리기 자체가 없어 원래 URI 그대로 (#26)
+            val base = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            val uri = if (Build.VERSION.SDK_INT >= 29) MediaStore.setRequireOriginal(base) else base
             ctx.contentResolver.openInputStream(uri)?.use { s ->
                 val exif = ExifInterface(s)
                 exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)?.trim()?.take(19)?.let { dt ->
@@ -158,8 +185,7 @@ class Scanner(private val ctx: Context) {
                     }
                 }
                 exif.getAttribute(ExifInterface.TAG_MAKE)?.let { v.put("make", it) }
-                val ll = FloatArray(2)
-                if (exif.getLatLong(ll)) { v.put("lat", ll[0].toDouble()); v.put("lon", ll[1].toDouble()) }
+                exif.latLong?.let { ll -> v.put("lat", ll[0]); v.put("lon", ll[1]) }
             }
         } catch (e: Exception) {
             // 읽을 수 없는 파일: 날짜 없음으로 둔다

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import java.io.File
@@ -265,7 +266,8 @@ class Indexer(
             if (mode == "night" && !charging) return "충전 끊김"
             val why = when {
                 mode == "night" && pm.isInteractive -> "사용 중"
-                pm.currentThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE -> "발열 상태 ${pm.currentThermalStatus}"
+                // 열 상태 API는 29부터. 28은 아래 배터리 온도 검사가 대신한다 (#26)
+                Build.VERSION.SDK_INT >= 29 && pm.currentThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE -> "발열 상태 ${pm.currentThermalStatus}"
                 temp >= TEMP_LIMIT -> "배터리 ${temp}℃"
                 slow() -> "속도 저하"
                 else -> return null

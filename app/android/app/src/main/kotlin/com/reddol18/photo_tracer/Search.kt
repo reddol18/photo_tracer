@@ -450,7 +450,7 @@ class Search(private val ctx: Context) {
     /** 사진이 얼마나 '내용 있는지': 96px 회색 썸네일의 라플라시안 분산(또렷함), RGB 표준편차 평균(색 다양함) */
     private fun detail(id: Long): Pair<Double, Double> {
         val uri = android.content.ContentUris.withAppendedId(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-        val raw = ctx.contentResolver.loadThumbnail(uri, android.util.Size(96, 96), null)
+        val raw = Thumbs.load(ctx, uri, 96) // 28은 원본을 줄여 읽는다(#26). 어느 쪽이든 아래에서 96×96으로 늘인다
         val bmp = android.graphics.Bitmap.createScaledBitmap(raw, 96, 96, true).also { if (it !== raw) raw.recycle() }
         val n = 96
         val px = IntArray(n * n).also { bmp.getPixels(it, 0, n, 0, 0, n, n) }
