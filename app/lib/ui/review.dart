@@ -52,7 +52,7 @@ class _ReviewPageState extends State<ReviewPage> {
     if (ok != null) {
       // 답할 때마다 인물을 다시 붙여서(Who.assignAll, 1초쯤) 기다리지 않고 다음 사진으로 넘어간다.
       // 채널 작업은 한 줄로 차례대로 돌고, 다음 묶음을 부르기 전에 모두 끝나기를 기다린다
-      pending.add(channel.invokeMethod('whoMark', {'id': f['person'], 'faces': [f['face']], 'ok': ok}));
+      pending.add(changePeople('whoMark', {'id': f['person'], 'faces': [f['face']], 'ok': ok}));
       answered++;
     } else {
       skipped.add(f['face']);

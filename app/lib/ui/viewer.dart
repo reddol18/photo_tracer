@@ -149,7 +149,7 @@ class _PhotoViewerState extends State<PhotoViewer> {
                   label: const Text('앱이 붙인 이름이 모두 틀렸어요'),
                   onPressed: () async {
                     Navigator.pop(context);
-                    await channel.invokeMethod('whoRejectAll', {'photo': id});
+                    await changePeople('whoRejectAll', {'photo': id});
                     load(id);
                   },
                 ),
@@ -234,11 +234,11 @@ class _PhotoViewerState extends State<PhotoViewer> {
     if (choice == 'new') {
       final n = await askPerson(context, '새 인물');
       if (n == null) return;
-      await channel.invokeMethod('whoCreate', {...n, 'faces': [faceId]});
+      await changePeople('whoCreate', {...n, 'faces': [faceId]});
       people = await loadPeople();
     } else {
       final [op, person] = choice.split(':');
-      await channel.invokeMethod('whoMark', {'id': int.parse(person), 'faces': [faceId], 'ok': op == 'ok'});
+      await changePeople('whoMark', {'id': int.parse(person), 'faces': [faceId], 'ok': op == 'ok'});
     }
     load(id);
   }

@@ -229,7 +229,11 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
         ),
         bottomNavigationBar: NavigationBar(
           selectedIndex: tab,
-          onDestinationSelected: (i) => setState(() => tab = i),
+          onDestinationSelected: (i) {
+            // 인물 탭에 들어올 때마다 다시 읽게 알린다(#27). 같은 탭을 또 눌러도 새로 읽는다
+            if (i == 2) PeoplePage.shown.value++;
+            setState(() => tab = i);
+          },
           destinations: const [
             NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: '홈'),
             NavigationDestination(icon: Icon(Icons.search), label: '검색'),

@@ -51,12 +51,14 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     Status.i.addListener(onStatus);
+    peopleVersion.addListener(onPeople);
     reload();
   }
 
   @override
   void dispose() {
     Status.i.removeListener(onStatus);
+    peopleVersion.removeListener(onPeople);
     _calm?.cancel();
     scroll.dispose();
     barTop.dispose();
@@ -70,6 +72,25 @@ class _HomePageState extends State<HomePage> {
     final st = Status.i;
     final seg = st.segments, faces = (st.s?['faces_done'] as num?)?.toInt() ?? 0;
     if (lastSegments >= 0 && !st.scanning && (seg != lastSegments || faces - lastPeopleDone > 500)) reload();
+  }
+
+  int peopleSeq = 0; // onPeople 순번: 늦게 온 옛 목록이 덮지 않게
+
+  /// 다른 곳에서 인물을 바꾸면(#27) 인물 고르기 칩만 새로 읽는다. 고른 인물이 지워지거나 합쳐져 없어졌으면 전체로 돌린다
+  Future<void> onPeople() async {
+    final s = ++peopleSeq;
+    try {
+      final p = await loadPeople();
+      if (!mounted || s != peopleSeq) return;
+      final gone = person != null && !p.any((e) => e['id'] == person);
+      setState(() {
+        people = p..sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
+        if (gone) person = null;
+      });
+      if (gone) reload();
+    } catch (e) {
+      debugPrint('홈 인물 목록 읽기 실패: $e');
+    }
   }
 
   Map<String, Object?> get filter => {'person': person, ...?range?.args};

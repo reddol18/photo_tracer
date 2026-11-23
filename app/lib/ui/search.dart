@@ -41,9 +41,8 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void initState() {
     super.initState();
-    loadPeople().then((p) {
-      if (mounted) setState(() => people = {for (final e in p) e['id'] as int: e});
-    }).catchError((_) {});
+    peopleVersion.addListener(onPeople); // 다른 곳에서 인물을 바꾸면 이름·얼굴을 새로(#27)
+    onPeople();
     pref('recent').then((r) {
       if (mounted && r != null && r.isNotEmpty) setState(() => recent = r.split('\n'));
     }).catchError((_) {});
@@ -56,7 +55,20 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void dispose() {
     SearchPage.debugQuery.removeListener(onDebugQuery);
+    peopleVersion.removeListener(onPeople);
     super.dispose();
+  }
+
+  int peopleSeq = 0; // 늦게 온 옛 목록이 덮지 않게
+
+  Future<void> onPeople() async {
+    final s = ++peopleSeq;
+    try {
+      final p = await loadPeople();
+      if (mounted && s == peopleSeq) setState(() => people = {for (final e in p) e['id'] as int: e});
+    } catch (e) {
+      debugPrint('검색 인물 목록 읽기 실패: $e');
+    }
   }
 
   /// 개발용 확인 통로 — 출시 전 정리 대상: 새 검색으로(고른 인물·나이 주인은 비운다). 검색 중이면 끝난 뒤 한다

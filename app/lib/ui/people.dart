@@ -6,6 +6,9 @@ part of '../main.dart';
 class PeoplePage extends StatefulWidget {
   const PeoplePage({super.key});
 
+  /// 아래 탭에서 인물 탭으로 옮길 때 올린다(main.dart Shell) — 밤 정리로 바뀐 사진 수·묶음도 들어올 때마다 새로 읽는다(#27)
+  static final shown = ValueNotifier<int>(0);
+
   @override
   State<PeoplePage> createState() => _PeoplePageState();
 }
@@ -15,26 +18,40 @@ class _PeoplePageState extends State<PeoplePage> {
   List<Map<String, dynamic>> unknown = []; // 아직 등록 안 한 사람의 자동 묶음
   int review = 0; // '이 사람 맞나요?' 남은 수
   final selected = <int>[]; // 길게 눌러 고른 등록 인물(합치기). 처음 고른 인물로 합친다
+  int seq = 0; // load 순번: 늦게 온 옛 결과가 새 결과를 덮지 않게 마지막 요청의 답만 쓴다
+  late final refresh = Listenable.merge([peopleVersion, PeoplePage.shown]);
 
   @override
   void initState() {
     super.initState();
+    // 탭이 IndexedStack이라 이 화면은 앱이 떠 있는 동안 남는다. 다른 화면에서 인물을 바꾸거나 탭에 들어오면 다시 읽는다(#27)
+    refresh.addListener(load);
     load();
   }
 
+  @override
+  void dispose() {
+    refresh.removeListener(load);
+    super.dispose();
+  }
+
   Future<void> load() async {
+    final s = ++seq;
     try {
       final p = await loadPeople();
       final c = ((await channel.invokeMethod('persons')) as List).map((e) => Map<String, dynamic>.from(e)).toList();
       final r = Map<String, dynamic>.from(await channel.invokeMethod('reviewQueue', {'limit': 1}) as Map);
-      if (!mounted) return;
+      if (!mounted || s != seq) return;
       setState(() {
         people = p..sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
         unknown = c.where((e) => e['known'] != true).toList();
         review = (r['total'] as num).toInt();
+        selected.removeWhere((id) => !p.any((e) => e['id'] == id)); // 다른 곳에서 지우거나 합친 인물은 고름에서 뺀다
       });
-    } catch (_) {
-      if (mounted) setState(() => people ??= []);
+    } catch (e, st) {
+      // 예전에는 오류를 삼켜 옛 목록이 그대로 남았다(#27). 원인을 볼 수 있게 남긴다
+      debugPrint('인물 목록 읽기 실패: $e\n$st');
+      if (mounted && s == seq) setState(() => people ??= []);
     }
   }
 
@@ -43,9 +60,9 @@ class _PeoplePageState extends State<PeoplePage> {
     final ok = await confirm(context, '${selected.length}명을 한 사람으로 합칠까요?',
         '같은 사람을 두 번 등록했을 때 써요. 모두 "${names[selected.first]}"(으)로 모아요.', ok: '합치기');
     if (!ok) return;
-    await channel.invokeMethod('whoMerge', {'ids': selected});
-    setState(selected.clear);
-    load();
+    final ids = [...selected];
+    if (mounted) setState(selected.clear);
+    await changePeople('whoMerge', {'ids': ids}); // 끝나면 peopleVersion으로 load
   }
 
   void toggle(int id) => setState(() => selected.contains(id) ? selected.remove(id) : selected.add(id));
@@ -282,6 +299,7 @@ class _ClustersPageState extends State<ClustersPage> {
         ticker?.cancel();
         ticker = null;
         load();
+        peopleVersion.value++; // 자동 묶음이 바뀌었다 — 인물 탭의 '자주 보이는 얼굴'도 새로
       } else {
         setState(() => info = i);
       }
@@ -415,7 +433,7 @@ class _WhoPageState extends State<WhoPage> {
   }
 
   Future<void> act(String method, Iterable<int> ids) async {
-    await channel.invokeMethod(method, {'id': widget.id, 'photos': ids.toList()});
+    await changePeople(method, {'id': widget.id, 'photos': ids.toList()});
     setState(selected.clear);
     await load();
   }
@@ -425,12 +443,12 @@ class _WhoPageState extends State<WhoPage> {
   Future<void> menu(String v) async {
     if (v == 'edit') {
       final n = await askPerson(context, '인물 정보', person);
-      if (n != null) { await channel.invokeMethod('whoUpdate', {...n, 'id': widget.id}); load(); }
+      if (n != null) { await changePeople('whoUpdate', {...n, 'id': widget.id}); load(); }
     } else if (v == 'sort') {
       setState(() => lowFirst = !lowFirst);
     } else if (v == 'delete') {
       if (await confirm(context, '"$name"을(를) 지울까요?', '이 사람으로 찾은 기록을 지워요. 사진은 지우지 않아요.', ok: '지우기', danger: true)) {
-        await channel.invokeMethod('whoDelete', {'id': widget.id});
+        await changePeople('whoDelete', {'id': widget.id});
         if (mounted) Navigator.pop(context);
       }
     }

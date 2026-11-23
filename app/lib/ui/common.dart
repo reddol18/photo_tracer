@@ -247,6 +247,19 @@ String personLabel(Map<String, dynamic> p) {
 Future<List<Map<String, dynamic>>> loadPeople() async =>
     ((await channel.invokeMethod('people')) as List).map((e) => Map<String, dynamic>.from(e)).toList();
 
+/// 인물 목록 판 번호(#27). 인물을 등록·고치기·합치기·지우기·맞다/아니다 하면 올린다.
+/// 탭은 IndexedStack이라 한 번 만든 화면(인물 탭·홈·검색)이 그대로 남아, 알리지 않으면 다른 곳에서 바꾼 것을 모른다
+final peopleVersion = ValueNotifier<int>(0);
+
+/// 인물을 바꾸는 채널 호출(who*). 끝나면 성공·실패와 상관없이 peopleVersion을 올린다(실패해도 일부는 바뀌었을 수 있다)
+Future<T?> changePeople<T>(String method, Map<String, Object?> args) async {
+  try {
+    return await channel.invokeMethod<T>(method, args);
+  } finally {
+    peopleVersion.value++;
+  }
+}
+
 // ───────────────────────────── 공용 위젯
 
 /// 화면 제목: 큰 글씨 한 줄 + 오른쪽 버튼
@@ -352,6 +365,8 @@ Future<Map<String, dynamic>?> askPerson(BuildContext context, String title, [Map
   return showDialog<Map<String, dynamic>>(
     context: context,
     builder: (context) => AlertDialog(
+      // 작은 화면(S8)에서 키보드가 올라오면 입력칸 세 줄이 넘친다(#27) — 내용을 스크롤되게
+      scrollable: true,
       title: Text(title),
       content: Column(mainAxisSize: MainAxisSize.min, children: [
         TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: '이름 또는 호칭', hintText: '예: 지우, 엄마')),
