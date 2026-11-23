@@ -44,6 +44,22 @@ class _OnboardingPageState extends State<OnboardingPage> with WidgetsBindingObse
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // 뒤로가기(#30): 앞 단계로, 첫 단계면 앱을 끝내지 않고 뒤로 보낸다(다시 열면 이 단계 그대로)
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (step > 0) {
+          pages.previousPage(duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic);
+        } else {
+          sendToBack();
+        }
+      },
+      child: _body(cs),
+    );
+  }
+
+  Widget _body(ColorScheme cs) {
     return Scaffold(
       backgroundColor: Theme.of(context).cardTheme.color,
       body: SafeArea(

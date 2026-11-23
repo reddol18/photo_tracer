@@ -211,6 +211,8 @@ class MainActivity : FlutterActivity() {
                 "debugQuery" -> { val q = debugQuery; debugQuery = null; result.success(q) }
                 // 시작 화면(#21): 12(31) 미만은 시스템 시작 화면이 이미 그라데이션이라 Flutter가 처음부터 다 보이게 그린다
                 "sdkInt" -> result.success(Build.VERSION.SDK_INT)
+                // 뒤로가기(#30): 홈에서 뒤로가기는 finish 대신 작업을 뒤로 보낸다. 액티비티·엔진이 그대로라 다시 열면 보던 화면
+                "background" -> result.success(moveTaskToBack(true))
                 // 화면 설정(대표 색·화면 모드·처음 안내 봄·최근 검색어): 문자열 하나씩
                 "pref" -> bg { getSharedPreferences("ui", MODE_PRIVATE).getString(call.argument<String>("key"), null) }
                 "setPref" -> bg {

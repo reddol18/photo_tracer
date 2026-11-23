@@ -23,6 +23,16 @@ part 'ui/viewer.dart';
 /// 화면은 lib/ui/ 아래 파일들(이 파일의 part), 분석은 모두 Kotlin(android/app/src/main/kotlin)에서 한다.
 const channel = MethodChannel('app');
 
+/// 앱을 끝내지 않고 뒤로 보낸다(#30): 다시 열면 보던 화면 그대로. Kotlin이 moveTaskToBack(true)
+/// 채널이 안 되면(안드로이드 밖 등) 원래 동작(SystemNavigator.pop)으로
+Future<void> sendToBack() async {
+  try {
+    await channel.invokeMethod('background');
+  } catch (_) {
+    await SystemNavigator.pop();
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 시스템 시작 화면이 보이는 동안 아이콘만 풀어 둔다(첫 프레임부터 같은 아이콘). 나머지 준비는 Flutter 시작 화면이 보이는 동안 한다
@@ -225,8 +235,25 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
     }
   }
 
+  /// 뒤로가기(#30): 다른 탭이면 홈 탭으로, 홈이면 앱을 끝내지 않고 뒤로 보낸다.
+  /// PopScope는 Shell의 route에만 걸리므로, 위에 push된 화면(크게 보기·사진 목록)이나 바텀시트·대화상자는 원래대로 그것만 닫힌다
+  void back(bool didPop, Object? _) {
+    if (didPop) return;
+    if (tab != 0) {
+      go(0);
+    } else {
+      sendToBack();
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => PopScope(
+        canPop: false,
+        onPopInvokedWithResult: back,
+        child: _scaffold(),
+      );
+
+  Widget _scaffold() => Scaffold(
         body: SafeArea(
           child: IndexedStack(index: tab, children: [
             HomePage(onSearch: () => go(1)),
