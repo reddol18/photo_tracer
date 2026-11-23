@@ -41,7 +41,7 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void initState() {
     super.initState();
-    peopleVersion.addListener(onPeople); // 다른 곳에서 인물을 바꾸면 이름·얼굴을 새로(#27)
+    peopleVersion.addListener(settle.call); // 다른 곳에서 인물을 바꾸면 이름·얼굴을 새로(#27). 잠깐 모아서(#29)
     onPeople();
     pref('recent').then((r) {
       if (mounted && r != null && r.isNotEmpty) setState(() => recent = r.split('\n'));
@@ -55,10 +55,12 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void dispose() {
     SearchPage.debugQuery.removeListener(onDebugQuery);
-    peopleVersion.removeListener(onPeople);
+    peopleVersion.removeListener(settle.call);
+    settle.cancel();
     super.dispose();
   }
 
+  late final settle = Debounced(onPeople);
   int peopleSeq = 0; // 늦게 온 옛 목록이 덮지 않게
 
   Future<void> onPeople() async {

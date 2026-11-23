@@ -79,16 +79,42 @@ class _PhotoViewerState extends State<PhotoViewer> {
     if (mounted) setState(() {});
   }
 
+  late final settle = Debounced(refresh);
+  int peopleSeq = 0; // 늦게 온 옛 인물 목록이 덮지 않게
+
   @override
   void initState() {
     super.initState();
     ShowFaces.on.addListener(onShowFaces);
-    loadPeople().then((p) => mounted ? setState(() => people = p) : null);
+    // 밤 정리·다시 묶기 끝(status)이나 다른 곳에서 인물이 바뀌어도 이름표·'누구인가요?' 시트를 새로(#29 C)
+    peopleVersion.addListener(settle.call);
+    loadNames();
     load(id);
+  }
+
+  Future<void> loadNames() async {
+    final s = ++peopleSeq;
+    try {
+      final p = await loadPeople();
+      if (mounted && s == peopleSeq) setState(() => people = p);
+    } catch (e) {
+      debugPrint('뷰어 인물 목록 읽기 실패: $e');
+    }
+  }
+
+  /// 인물이 바뀐 뒤: 등록 인물 목록과 지금 사진을 다시 읽고, 다른 사진의 얼굴 정보는 비워 넘길 때 다시 읽게 한다.
+  /// 새 인물을 등록하면 assignAll이 이미 넘겨 본 다른 사진의 이름도 바꾸기 때문(#29 C)
+  Future<void> refresh() async {
+    settle.cancel();
+    final cur = id;
+    infos.removeWhere((k, _) => k != cur);
+    await Future.wait([loadNames(), load(cur)]);
   }
 
   @override
   void dispose() {
+    peopleVersion.removeListener(settle.call);
+    settle.cancel();
     ShowFaces.on.removeListener(onShowFaces);
     for (final c in zooms.values) {
       c.dispose();
@@ -150,7 +176,7 @@ class _PhotoViewerState extends State<PhotoViewer> {
                   onPressed: () async {
                     Navigator.pop(context);
                     await changePeople('whoRejectAll', {'photo': id});
-                    load(id);
+                    refresh();
                   },
                 ),
               ),
@@ -235,12 +261,12 @@ class _PhotoViewerState extends State<PhotoViewer> {
       final n = await askPerson(context, '새 인물');
       if (n == null) return;
       await changePeople('whoCreate', {...n, 'faces': [faceId]});
-      people = await loadPeople();
     } else {
       final [op, person] = choice.split(':');
       await changePeople('whoMark', {'id': int.parse(person), 'faces': [faceId], 'ok': op == 'ok'});
     }
-    load(id);
+    // changePeople이 올린 peopleVersion의 늦은 다시 읽기는 refresh가 지우고 바로 읽는다
+    if (mounted) await refresh();
   }
 
   @override

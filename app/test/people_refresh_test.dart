@@ -46,6 +46,7 @@ void main() {
     // 홈·검색의 크게 보기에서 등록한 것처럼: 인물 탭 밖에서 채널을 부른다
     await changePeople('whoCreate', {'name': '아빠', 'faces': [7]});
     await changePeople('whoCreate', {'name': '딸', 'faces': [8]});
+    await t.pump(peopleSettle); // 듣는 쪽이 잠깐 모았다가 한 번 읽는다(#29)
     await t.pumpAndSettle();
     expect(find.text('등록한 인물 3명'), findsOneWidget);
     expect(find.text('딸'), findsWidgets); // 이름 + 얼굴 없는 아바타의 첫 글자

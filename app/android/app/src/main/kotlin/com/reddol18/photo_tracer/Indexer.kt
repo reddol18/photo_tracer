@@ -77,7 +77,7 @@ class Indexer(
             stop = loop()
             // 얼굴 벡터를 다시 만들었으면 묶음 중심도 옛 벡터라 처음부터 다시 묶는다
             if (reembedded > 0 && stop == "완료") People(ctx).full()
-            if (stop == "완료") { People(ctx).cluster(); Who(ctx).assignAll() }
+            if (stop == "완료") { People(ctx).cluster(); Who(ctx).assignAll(); People.changed(ctx) } // 화면에 알림(#29 E)
         } catch (e: Throwable) {
             Log.e("PhotoTracer", "밤 작업 오류", e)
             stop = "오류: ${e.javaClass.simpleName} ${e.message?.take(80)}"

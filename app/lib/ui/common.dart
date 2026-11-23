@@ -140,6 +140,7 @@ class Status extends ChangeNotifier {
     try {
       if (scan) await channel.invokeMethod('scan');
       s = Map<String, dynamic>.from(await channel.invokeMethod('status'));
+      _checkPeopleGen();
       if (scan || _tick++ % 20 == 0) {
         runs = ((await channel.invokeMethod('runs')) as List).map((e) => Map<String, dynamic>.from(e)).toList();
       }
@@ -148,6 +149,17 @@ class Status extends ChangeNotifier {
       error = '$e';
     }
     notifyListeners();
+  }
+
+  int? _peopleGen; // 처음 읽은 값은 기준으로만 둔다
+
+  /// 다시 묶기·밤 정리·지금 정리 끝(#29 D·E): 화면 밖에서 묶음·인물 지정이 바뀌면 Kotlin이 people_gen을 올린다.
+  /// 바뀐 것을 보면 peopleVersion을 올려 인물 탭·홈·검색이 다시 읽게 한다
+  void _checkPeopleGen() {
+    final g = (s?['people_gen'] as num?)?.toInt();
+    if (g == null) return;
+    if (_peopleGen != null && g != _peopleGen) peopleVersion.value++;
+    _peopleGen = g;
   }
 
   int _n(String k) => (s?[k] as num?)?.toInt() ?? 0;
@@ -257,6 +269,30 @@ Future<T?> changePeople<T>(String method, Map<String, Object?> args) async {
     return await channel.invokeMethod<T>(method, args);
   } finally {
     peopleVersion.value++;
+  }
+}
+
+/// peopleVersion을 듣는 쪽이 다시 읽기를 잠깐 모은다(#29). '이 사람 맞나요?'에서 빠르게 답하면 판 번호가 줄줄이 올라
+/// 인물 탭·홈·검색이 매번 다시 읽으면 같은 작업 줄(worker)이 막혀 다음 묶음 로딩이 늦다
+const peopleSettle = Duration(milliseconds: 300);
+
+/// 마지막 부름 뒤 [delay] 동안 조용하면 [fn]을 한 번 부른다. 화면 dispose 때 cancel
+class Debounced {
+  Debounced(this.fn, [this.delay = peopleSettle]);
+  final VoidCallback fn;
+  final Duration delay;
+  Timer? _t;
+
+  void call() {
+    _t?.cancel();
+    _t = Timer(delay, fn);
+  }
+
+  bool get pending => _t?.isActive ?? false;
+
+  void cancel() {
+    _t?.cancel();
+    _t = null;
   }
 }
 
@@ -409,21 +445,58 @@ class PhotosPage extends StatefulWidget {
 class _PhotosPageState extends State<PhotosPage> {
   List<int>? ids;
   final faces = <int, int>{}; // 사진 → 귀퉁이에 보일 얼굴
+  int seq = 0; // 늦게 온 옛 목록이 덮지 않게
+  int loadedVersion = -1; // 마지막으로 읽기 시작할 때의 peopleVersion
+  late final settle = Debounced(_load);
 
   @override
   void initState() {
     super.initState();
-    widget.load().then((r) {
-      if (!mounted) return;
-      setState(() => ids = (r as List).map((e) {
-            if (e is Map) {
-              final id = (e['id'] as num).toInt();
-              if (e['face'] != null) faces[id] = (e['face'] as num).toInt();
-              return id;
-            }
-            return (e as num).toInt();
-          }).toList());
-    });
+    // 뷰어에서 '아니에요'·이름 붙이기를 하면 이 목록(순간·인물 거르기)도 바뀐다(#29 B)
+    peopleVersion.addListener(settle.call);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    peopleVersion.removeListener(settle.call);
+    settle.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final s = ++seq;
+    loadedVersion = peopleVersion.value;
+    try {
+      final r = await widget.load();
+      if (!mounted || s != seq) return;
+      final f = <int, int>{};
+      final list = (r as List).map((e) {
+        if (e is Map) {
+          final id = (e['id'] as num).toInt();
+          if (e['face'] != null) f[id] = (e['face'] as num).toInt();
+          return id;
+        }
+        return (e as num).toInt();
+      }).toList();
+      setState(() {
+        ids = list;
+        faces
+          ..clear()
+          ..addAll(f);
+      });
+    } catch (e) {
+      debugPrint('사진 목록 읽기 실패: $e');
+    }
+  }
+
+  /// 뷰어에서 돌아왔을 때 그사이 인물이 바뀌었는데 아직 안 읽었으면 바로 읽는다
+  Future<void> open(int i) async {
+    await showPhoto(context, ids![i], ids: ids);
+    if (mounted && peopleVersion.value != loadedVersion) {
+      settle.cancel();
+      _load();
+    }
   }
 
   @override
@@ -446,7 +519,7 @@ class _PhotosPageState extends State<PhotosPage> {
                     delegate: SliverChildBuilderDelegate(childCount: ids!.length, (context, i) {
                       final face = faces[ids![i]];
                       return GestureDetector(
-                        onTap: () => showPhoto(context, ids![i], ids: ids),
+                        onTap: () => open(i),
                         child: face == null
                             ? Thumb(ids![i])
                             : Stack(fit: StackFit.expand, children: [

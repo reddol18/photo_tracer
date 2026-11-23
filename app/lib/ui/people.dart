@@ -19,23 +19,27 @@ class _PeoplePageState extends State<PeoplePage> {
   int review = 0; // '이 사람 맞나요?' 남은 수
   final selected = <int>[]; // 길게 눌러 고른 등록 인물(합치기). 처음 고른 인물로 합친다
   int seq = 0; // load 순번: 늦게 온 옛 결과가 새 결과를 덮지 않게 마지막 요청의 답만 쓴다
-  late final refresh = Listenable.merge([peopleVersion, PeoplePage.shown]);
+  late final settle = Debounced(load); // 판 번호가 줄줄이 올라도(맞다/아니다 연속) 한 번만 읽는다(#29)
 
   @override
   void initState() {
     super.initState();
     // 탭이 IndexedStack이라 이 화면은 앱이 떠 있는 동안 남는다. 다른 화면에서 인물을 바꾸거나 탭에 들어오면 다시 읽는다(#27)
-    refresh.addListener(load);
+    peopleVersion.addListener(settle.call);
+    PeoplePage.shown.addListener(load); // 탭에 들어올 때는 바로
     load();
   }
 
   @override
   void dispose() {
-    refresh.removeListener(load);
+    peopleVersion.removeListener(settle.call);
+    PeoplePage.shown.removeListener(load);
+    settle.cancel();
     super.dispose();
   }
 
   Future<void> load() async {
+    settle.cancel(); // 지금 읽으니 모아 둔 다시 읽기는 필요 없다
     final s = ++seq;
     try {
       final p = await loadPeople();
@@ -299,7 +303,7 @@ class _ClustersPageState extends State<ClustersPage> {
         ticker?.cancel();
         ticker = null;
         load();
-        peopleVersion.value++; // 자동 묶음이 바뀌었다 — 인물 탭의 '자주 보이는 얼굴'도 새로
+        // 인물 탭·홈에 알리는 것은 Status가 한다(Kotlin people_gen, #29 D) — 여기서도 올리면 두 번 다시 읽는다
       } else {
         setState(() => info = i);
       }

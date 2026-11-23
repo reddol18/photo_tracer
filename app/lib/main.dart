@@ -177,9 +177,17 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> with WidgetsBindingObserver {
   int tab = 0;
 
+  /// 탭 옮기기. 인물 탭에 들어올 때마다 다시 읽게 알리고(#27, 같은 탭을 또 눌러도), 홈이 보이는지 알린다(#29 A)
+  void go(int i) {
+    if (i == 2) PeoplePage.shown.value++;
+    HomePage.visible.value = i == 0;
+    setState(() => tab = i);
+  }
+
   @override
   void initState() {
     super.initState();
+    HomePage.visible.value = true;
     WidgetsBinding.instance.addObserver(this);
     Status.i.start();
     if (kDebugMode) {
@@ -197,7 +205,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
     try {
       final q = await channel.invokeMethod<String>('debugQuery');
       if (q == null || q.trim().isEmpty || !mounted) return;
-      setState(() => tab = 1);
+      go(1);
       SearchPage.debugQuery.value = q;
     } catch (_) {}
   }
@@ -221,7 +229,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   Widget build(BuildContext context) => Scaffold(
         body: SafeArea(
           child: IndexedStack(index: tab, children: [
-            HomePage(onSearch: () => setState(() => tab = 1)),
+            HomePage(onSearch: () => go(1)),
             const SearchPage(),
             const PeoplePage(),
             const SettingsPage(),
@@ -229,11 +237,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
         ),
         bottomNavigationBar: NavigationBar(
           selectedIndex: tab,
-          onDestinationSelected: (i) {
-            // 인물 탭에 들어올 때마다 다시 읽게 알린다(#27). 같은 탭을 또 눌러도 새로 읽는다
-            if (i == 2) PeoplePage.shown.value++;
-            setState(() => tab = i);
-          },
+          onDestinationSelected: go,
           destinations: const [
             NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: '홈'),
             NavigationDestination(icon: Icon(Icons.search), label: '검색'),

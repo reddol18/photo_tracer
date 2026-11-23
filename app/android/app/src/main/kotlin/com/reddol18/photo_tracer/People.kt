@@ -26,6 +26,38 @@ class People(private val ctx: Context) {
         // 검출 해상도(Models.DETECT_LONG_SIDE로 줄인 사진)에서 얼굴 상자의 짧은 변이 MIN_SIDE 이상 (load의 p = photos)
         private val BIG = "MIN(f.w * p.w, f.h * p.h) * MIN(1.0, ${Models.DETECT_LONG_SIDE}.0 / MAX(p.w, p.h, 1)) >= $MIN_SIDE"
         @Volatile var running = 0L // 처음부터 다시 묶는 중이면 시작 시각(화면을 떠났다 와도 묶는 중인지 알 수 있게)
+
+        /**
+         * 자주 보이는 얼굴 묶음 목록("persons"): 묶음, 사진 수, 얼굴 수, 이름 붙은 얼굴 수, '아니에요'만 받은 얼굴 수.
+         * 이름 붙음 = 찾은 인물(who)이 있거나 정답 표시(ok = 1). 아니에요 = 이름이 없고 '아니에요'(ok = 0, 어느 인물이든) 표시가 있음.
+         */
+        val PERSONS_SQL = """SELECT person, COUNT(DISTINCT photo_id) n, COUNT(*), SUM(named), SUM(no AND NOT named) FROM (
+                SELECT person, photo_id,
+                    (who IS NOT NULL OR EXISTS (SELECT 1 FROM face_marks m WHERE m.face_id = faces.id AND m.ok = 1)) named,
+                    EXISTS (SELECT 1 FROM face_marks m WHERE m.face_id = faces.id AND m.ok = 0) no
+                FROM faces WHERE person IS NOT NULL)
+            GROUP BY person HAVING COUNT(*) >= $MIN_SHOW ORDER BY n DESC"""
+
+        /**
+         * 이미 등록한 사람의 묶음인가(#6, #28): 이름 붙은 얼굴 / (전체 − 아니에요) ≥ 0.5.
+         * '이 사람 아니에요'로 뺀 얼굴은 분모에서 뺀다 — 섞인 묶음을 다 정리해도 위에 남지 않게.
+         * 남은 얼굴이 없으면(모두 이름 또는 아니에요) 다 정리한 것이라 등록 쪽으로.
+         */
+        fun known(total: Int, named: Int, rejected: Int): Boolean {
+            val left = total - rejected
+            return left <= 0 || named * 2 >= left
+        }
+
+        private fun prefs(ctx: Context) = ctx.getSharedPreferences("clusters", Context.MODE_PRIVATE)
+
+        /** 화면 밖에서 묶음·인물 지정이 바뀐 횟수(#29). status에 실려 화면이 바뀐 것을 안다 */
+        fun gen(ctx: Context): Int = prefs(ctx).getInt("gen", 0)
+
+        /** 다시 묶기·밤 정리·지금 정리가 묶음이나 인물 지정을 바꾼 뒤 부른다(화면의 who* 호출은 화면이 직접 알린다) */
+        fun changed(ctx: Context) = synchronized(this) {
+            val p = prefs(ctx)
+            p.edit().putInt("gen", p.getInt("gen", 0) + 1).apply()
+        }
     }
 
     private val db = Db.get(ctx)
@@ -59,6 +91,7 @@ class People(private val ctx: Context) {
             prefs.edit().putLong("full_at", System.currentTimeMillis()).putInt("full_faces", vecs.size).putLong("full_ms", ms)
                 .putInt("added", 0).putLong("added_at", 0).apply()
             Log.i("PhotoTracer", "얼굴 ${vecs.size}개 → 묶음 ${size.size}개 (얼굴 ${MIN_SHOW}개 이상 ${size.values.count { it >= MIN_SHOW }}개), ${ms}ms")
+            changed(ctx) // 다시 묶기가 끝남 — 화면을 떠나 있어도 status로 알린다(#29 D)
         } finally { running = 0 }
     }
 

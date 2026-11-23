@@ -6,6 +6,9 @@ class HomePage extends StatefulWidget {
   const HomePage({super.key, this.onSearch});
   final VoidCallback? onSearch;
 
+  /// 홈 탭이 보이는가(main.dart Shell이 탭을 옮길 때 바꾼다). 안 보일 때 인물이 바뀌면 표시만 해 두고 보일 때 읽는다(#29 A)
+  static final visible = ValueNotifier<bool>(true);
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -47,18 +50,24 @@ class _HomePageState extends State<HomePage> {
   final scrolling = ValueNotifier<bool>(false);
   Timer? _calm;
 
+  late final settle = Debounced(onPeople);
+  bool dirty = false; // 숨어 있는 동안 인물이 바뀌어 순간을 다시 읽어야 함
+
   @override
   void initState() {
     super.initState();
     Status.i.addListener(onStatus);
-    peopleVersion.addListener(onPeople);
+    peopleVersion.addListener(settle.call);
+    HomePage.visible.addListener(onVisible);
     reload();
   }
 
   @override
   void dispose() {
     Status.i.removeListener(onStatus);
-    peopleVersion.removeListener(onPeople);
+    peopleVersion.removeListener(settle.call);
+    HomePage.visible.removeListener(onVisible);
+    settle.cancel();
     _calm?.cancel();
     scroll.dispose();
     barTop.dispose();
@@ -76,7 +85,8 @@ class _HomePageState extends State<HomePage> {
 
   int peopleSeq = 0; // onPeople 순번: 늦게 온 옛 목록이 덮지 않게
 
-  /// 다른 곳에서 인물을 바꾸면(#27) 인물 고르기 칩만 새로 읽는다. 고른 인물이 지워지거나 합쳐져 없어졌으면 전체로 돌린다
+  /// 다른 곳에서 인물을 바꾸면(#27, #29 A) 인물 고르기 칩을 새로 읽고, 순간(카드의 이름·장 수·표지, 인물로 거른 목록)도 다시 읽는다.
+  /// 고른 인물이 지워지거나 합쳐져 없어졌으면 전체로 돌린다. 홈이 안 보이면 순간은 표시만 해 두고 보일 때 읽는다
   Future<void> onPeople() async {
     final s = ++peopleSeq;
     try {
@@ -87,15 +97,53 @@ class _HomePageState extends State<HomePage> {
         people = p..sort((a, b) => (b['n'] as int).compareTo(a['n'] as int));
         if (gone) person = null;
       });
-      if (gone) reload();
+      if (gone) {
+        dirty = false;
+        reload();
+      } else {
+        dirty = true;
+        if (HomePage.visible.value) refreshMoments();
+      }
     } catch (e) {
       debugPrint('홈 인물 목록 읽기 실패: $e');
+    }
+  }
+
+  void onVisible() {
+    if (HomePage.visible.value && dirty && mounted) refreshMoments();
+  }
+
+  /// 순간을 지금 불러온 범위 그대로 다시 읽어 제자리에서 바꾼다(맨 위로 튀지 않게, 뛴 자리 anchor도 그대로)
+  Future<void> refreshMoments() async {
+    dirty = false;
+    final g = ++gen;
+    loading = true;
+    loadingUp = true;
+    final count = moments.length < page ? page : moments.length;
+    try {
+      final list = await fetch(base, count);
+      if (!mounted || g != gen) return;
+      setState(() {
+        moments
+          ..clear()
+          ..addAll(list);
+        end = list.length < count;
+      });
+      loadMonths();
+    } catch (e) {
+      debugPrint('홈 순간 다시 읽기 실패: $e');
+    } finally {
+      if (g == gen) {
+        loading = false;
+        loadingUp = false;
+      }
     }
   }
 
   Map<String, Object?> get filter => {'person': person, ...?range?.args};
 
   Future<void> reload() async {
+    dirty = false;
     lastSegments = Status.i.segments;
     lastPeopleDone = (Status.i.s?['faces_done'] as num?)?.toInt() ?? 0;
     try {

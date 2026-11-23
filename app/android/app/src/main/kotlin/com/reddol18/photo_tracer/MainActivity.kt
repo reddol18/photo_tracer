@@ -75,6 +75,7 @@ class MainActivity : FlutterActivity() {
         if (prefs.getInt("who_rule", 0) < Who.RULE) worker.execute {
             Who(this).assignAll()
             prefs.edit().putInt("who_rule", Who.RULE).apply()
+            People.changed(this) // 화면 밖에서 인물 지정이 바뀜(#29)
         }
         readDebugQuery(intent) // 개발용 확인 통로 — 출시 전 정리 대상 (차가운 시작)
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app")
@@ -142,12 +143,10 @@ class MainActivity : FlutterActivity() {
                 }
                 "persons" -> bg {
                     val out = ArrayList<Map<String, Any>>()
-                    // known: 얼굴 절반 이상이 이미 등록한 인물(찾음 또는 정답) — 화면에서 접어 둔다(#6)
-                    db.readableDatabase.rawQuery("""SELECT person, COUNT(DISTINCT photo_id) n, MIN(id),
-                        AVG(who IS NOT NULL OR EXISTS (SELECT 1 FROM face_marks m WHERE m.face_id = faces.id AND m.ok = 1)) FROM faces
-                        WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW} ORDER BY n DESC""", null).use {
+                    // known: 이미 등록한 사람의 묶음인가 — 화면에서 접어 둔다(#6). '아니에요' 얼굴은 분모에서 뺀다(#28, People.known)
+                    db.readableDatabase.rawQuery(People.PERSONS_SQL, null).use {
                         while (it.moveToNext()) out.add(mapOf("id" to it.getLong(0), "n" to it.getInt(1), "face" to cover(db, it.getLong(0)),
-                            "known" to (it.getDouble(3) >= 0.5)))
+                            "known" to People.known(total = it.getInt(2), named = it.getInt(3), rejected = it.getInt(4))))
                     }
                     out
                 }
@@ -280,6 +279,8 @@ class MainActivity : FlutterActivity() {
             "reface_needed" to n("SELECT COUNT(*) FROM photos p WHERE p.faces_done = 1 AND EXISTS (SELECT 1 FROM faces WHERE photo_id = p.id)"),
             "reface_done" to n("SELECT COUNT(*) FROM photos p WHERE p.faces_done = 1 AND p.face_ver >= ${Models.FACE_VER} AND EXISTS (SELECT 1 FROM faces WHERE photo_id = p.id)"),
             "persons" to n("SELECT COUNT(*) FROM (SELECT person FROM faces WHERE person IS NOT NULL GROUP BY person HAVING COUNT(*) >= ${People.MIN_SHOW})"),
+            // 다시 묶기·밤 정리·지금 정리가 묶음·인물 지정을 바꿀 때마다 오르는 번호(#29). 화면이 바뀐 것을 보고 다시 읽는다
+            "people_gen" to People.gen(this),
         )
     }
 
